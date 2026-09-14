@@ -66,7 +66,7 @@ It outputs `ran`: `true` when the update ran, `false` when it was skipped as alr
 
 A cache with a second entry point adds a second job passing `operation:`.
 
-## `dandi-cache/dandi-cache-action/image` — build a cache's runtime image
+## `dandi-cache/dandi-cache-action/build-and-publish-image` — build and publish the runtime image
 
 ```yaml
 jobs:
@@ -76,7 +76,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: dandi-cache/dandi-cache-action/image@v0
+      - uses: dandi-cache/dandi-cache-action/build-and-publish-image@v0
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           mail-username: ${{ secrets.MAIL_USERNAME }}

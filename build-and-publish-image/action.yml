@@ -1,4 +1,4 @@
-name: DANDI Cache Image
+name: Build and Publish a DANDI Cache Image
 description: Build and publish a DANDI cache's runtime container image.
 author: DANDI Cache
 
