@@ -1,0 +1,177 @@
+name: DANDI Cache Update
+description: Run a DANDI cache's scheduled update, recording it with full DataLad provenance.
+author: DANDI Cache
+
+branding:
+  icon: refresh-cw
+  color: blue
+
+# The update every cache in the organization runs on a schedule. A cache's own workflow keeps what
+# is genuinely its own -- when it runs and what a manual dispatch can change -- and this does the
+# rest: skipping a run that was overtaken while queued, building the runner's environment, pulling
+# the cache's runtime image, extracting the shared pipeline from it, and running the update.
+#
+# The orchestration itself is not here either. It ships inside the `dandi_cache_utils` package,
+# vendored in the cache's own runtime image, and is extracted from that image at run time -- so the
+# image digest recorded in each run's provenance pins the pipeline and the runtime environment
+# together, and a recorded run can be reproduced from the digest alone.
+
+inputs:
+  token:
+    description: >-
+      Token used to check out the repository, push the results, and read the runtime image from the
+      container registry. Needs `contents: write` on the cache repository and `read:packages`.
+    required: true
+  operation:
+    description: "Which entry point from the cache's [operations] table to run."
+    required: false
+    default: update
+  testing:
+    description: "Testing mode: process a handful of items into testing_-prefixed files, leaving the cache untouched."
+    required: false
+    default: "false"
+  limit:
+    description: "Cap on new items processed this run. Empty uses the operation's limit from cache.toml."
+    required: false
+    default: ""
+  image:
+    description: "Runtime image. Empty uses the image cache.toml declares for this cache."
+    required: false
+    default: ""
+  mail-username:
+    description: "SMTP username for the failure notification. Leave empty to send no mail."
+    required: false
+    default: ""
+  mail-password:
+    description: "SMTP password for the failure notification."
+    required: false
+    default: ""
+  notify-to:
+    description: "Comma-separated recipients of the failure notification (no spaces)."
+    required: false
+    default: cody.c.baker.phd@gmail.com
+
+outputs:
+  ran:
+    description: "`true` when the update ran, `false` when it was skipped as already done."
+    value: ${{ steps.gate.outputs.should-run }}
+
+runs:
+  using: composite
+  steps:
+    # Runs are serialized by the caller's concurrency group, so a run triggered while another is
+    # executing waits rather than being cancelled. By the time it starts, the update it would
+    # perform has just been done -- unless the preceding run failed, in which case this one
+    # proceeds as a fresh attempt.
+    - name: Skip if a run already completed while this one was queued
+      id: gate
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        CREATED_AT=$(gh run view "${{ github.run_id }}" --repo "${{ github.repository }}" --json createdAt --jq '.createdAt')
+        LAST_SUCCESS_AT=$(gh run list --repo "${{ github.repository }}" --workflow "${{ github.workflow }}" --status success --limit 1 --json updatedAt --jq '.[0].updatedAt // empty')
+
+        # ISO 8601 UTC timestamps compare correctly as strings. A successful run that finished
+        # after this run was triggered means this run spent its life queued behind it and would
+        # only repeat the same work.
+        if [ -n "${LAST_SUCCESS_AT}" ] && [ "${LAST_SUCCESS_AT}" \> "${CREATED_AT}" ]; then
+          echo "A run succeeded at ${LAST_SUCCESS_AT}, after this one was triggered at ${CREATED_AT}; skipping."
+          echo "should-run=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "should-run=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Checkout
+      if: ${{ steps.gate.outputs.should-run == 'true' }}
+      uses: actions/checkout@v7
+      with:
+        token: ${{ inputs.token }}
+        submodules: false
+
+    - name: Install uv
+      if: ${{ steps.gate.outputs.should-run == 'true' }}
+      uses: astral-sh/setup-uv@v7
+
+    - name: Install git-annex
+      if: ${{ steps.gate.outputs.should-run == 'true' }}
+      shell: bash
+      # `|| true` on the update: third-party apt repositories preinstalled on the runner (Chrome's,
+      # for one) intermittently fail to refresh, and that has nothing to do with the package we
+      # need. The install itself is not tolerated, so a genuinely missing package still fails here.
+      run: |
+        sudo apt-get update || true
+        sudo apt-get install -y git-annex
+
+    - name: Log in to GitHub Container Registry
+      if: ${{ steps.gate.outputs.should-run == 'true' }}
+      shell: bash
+      run: echo "${{ inputs.token }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin
+
+    - name: Resolve the runtime image
+      if: ${{ steps.gate.outputs.should-run == 'true' }}
+      id: image
+      shell: bash
+      run: |
+        IMAGE="${{ inputs.image }}"
+        if [ -z "${IMAGE}" ]; then
+          IMAGE="ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest"
+        fi
+        echo "reference=${IMAGE}" >> "$GITHUB_OUTPUT"
+
+    - name: Extract the shared pipeline from the image
+      if: ${{ steps.gate.outputs.should-run == 'true' }}
+      id: pipeline
+      shell: bash
+      env:
+        IMAGE: ${{ steps.image.outputs.reference }}
+      run: |
+        for attempt in 1 2 3 4 5; do
+          if docker pull "${IMAGE}"; then
+            break
+          fi
+          if [ "${attempt}" = 5 ]; then
+            echo "ERROR: docker pull ${IMAGE} failed after ${attempt} attempts." >&2
+            exit 1
+          fi
+          echo "WARNING: docker pull failed (attempt ${attempt}/5); retrying." >&2
+          sleep "$((attempt * 5))"
+        done
+
+        CONTAINER=$(docker create "${IMAGE}")
+        docker cp "${CONTAINER}:/opt/dandi-cache-utils" "${RUNNER_TEMP}/dandi-cache-utils"
+        docker rm "${CONTAINER}" > /dev/null
+        chmod +x "${RUNNER_TEMP}/dandi-cache-utils/src/dandi_cache_utils/pipeline/"*.sh
+        echo "directory=${RUNNER_TEMP}/dandi-cache-utils" >> "$GITHUB_OUTPUT"
+
+    - name: Run the update with provenance
+      if: ${{ steps.gate.outputs.should-run == 'true' }}
+      shell: bash
+      env:
+        REPO_URL: https://x-access-token:${{ inputs.token }}@github.com/${{ github.repository }}.git
+        WORKSPACE: ${{ github.workspace }}
+        IMAGE: ${{ steps.image.outputs.reference }}
+        OPERATION: ${{ inputs.operation }}
+        # "false" on a plain manual run and empty on a scheduled one; only "true" when testing mode
+        # is explicitly selected.
+        TESTING: ${{ inputs.testing }}
+        LIMIT: ${{ inputs.limit }}
+        GITHUB_SHA: ${{ github.sha }}
+        DANDI_CACHE_UTILS_DIR: ${{ steps.pipeline.outputs.directory }}
+      run: bash "${{ steps.pipeline.outputs.directory }}/src/dandi_cache_utils/pipeline/update_pipeline.sh"
+
+    # Inside the action rather than in every cache's workflow: an update that fails silently at
+    # 03:00 is one nobody finds until a consumer notices stale data. Supplying no SMTP username
+    # turns it off.
+    - name: Notify on failure
+      if: ${{ failure() && inputs.mail-username != '' }}
+      uses: dawidd6/action-send-mail@v18
+      with:
+        server_address: smtp.gmail.com
+        server_port: 465
+        username: ${{ inputs.mail-username }}
+        password: ${{ inputs.mail-password }}
+        subject: "CI Failure: DANDI Cache: ${{ github.event.repository.name }} (${{ inputs.operation }})"
+        to: ${{ inputs.notify-to }}
+        from: DANDI Cache <dandi-cache@users.noreply.github.com>
+        body: "Please check the latest run of the DANDI Cache ${{ inputs.operation }}: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
