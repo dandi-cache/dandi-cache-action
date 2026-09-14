@@ -2,16 +2,12 @@
 
 The GitHub Actions every [DANDI Cache](https://github.com/dandi-cache) repository runs.
 
-A cache is one operation around a shared pipeline. The pipeline itself lives in
-[`dandi-cache-utils`](https://github.com/dandi-cache/dandi-cache-utils) and ships inside the
-cache's runtime image; these actions are the thin CI layer that drives it, versioned by their own
-interface so a cache can pin them independently of the library.
+A cache is one operation around a shared pipeline.
+The pipeline itself lives in [`dandi-cache-utils`](https://github.com/dandi-cache/dandi-cache-utils) and ships inside the cache's runtime image; these actions are the thin CI layer that drives it, versioned by their own interface so a cache can pin them independently of the library.
 
 ## `dandi-cache/dandi-cache-action` — run a cache update
 
-Skips a run that was overtaken while queued, builds the runner's environment, pulls the cache's
-runtime image, extracts the shared pipeline from it, and runs the update with full DataLad
-provenance.
+Skips a run that was overtaken while queued, builds the runner's environment, pulls the cache's runtime image, extracts the shared pipeline from it, and runs the update with full DataLad provenance.
 
 ```yaml
 name: Update
@@ -83,11 +79,8 @@ jobs:
           mail-password: ${{ secrets.MAIL_PASSWORD }}
 ```
 
-`main` publishes `:latest` and the commit SHA; another branch publishes `dev-<branch>` and the SHA,
-so an environment change can be tested without overwriting `:latest`; a pull request only builds.
-The build then checks that the image really was built `FROM` the shared base, because the update
-extracts the orchestration from it at run time — catching a Dockerfile that is not, here rather
-than in the cache's next scheduled update.
+`main` publishes `:latest` and the commit SHA; another branch publishes `dev-<branch>` and the SHA, so an environment change can be tested without overwriting `:latest`; a pull request only builds.
+The build then checks that the image really was built `FROM` the shared base, because the update extracts the orchestration from it at run time — catching a Dockerfile that is not, here rather than in the cache's next scheduled update.
 
 | Input | Default | Meaning |
 |---|---|---|
@@ -98,11 +91,7 @@ than in the cache's next scheduled update.
 
 ## Why a repository of its own
 
-These are *referenced*, not copied: a cache says `uses:` and gets whatever this repository publishes
-at the tag it pins, so a fix reaches every cache at once without touching any of them. Keeping them
-apart from the library means they are versioned by their own interface — the inputs above — rather
-than by the library's release cadence, and a cache can pin `@v0` while tracking the image
-separately.
+These are *referenced*, not copied: a cache says `uses:` and gets whatever this repository publishes at the tag it pins, so a fix reaches every cache at once without touching any of them.
+Keeping them apart from the library means they are versioned by their own interface — the inputs above — rather than by the library's release cadence, and a cache can pin `@v0` while tracking the image separately.
 
-The [cache template](https://github.com/dandi-cache/cache-template) is the other side of that line:
-what it holds is copied once when a cache is generated, and owned by the cache from then on.
+The [cache template](https://github.com/dandi-cache/cache-template) is the other side of that line: what it holds is copied once when a cache is generated, and owned by the cache from then on.
