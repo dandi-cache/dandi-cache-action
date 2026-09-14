@@ -1,4 +1,4 @@
-# dandi-cache-actions
+# dandi-cache-action
 
 The GitHub Actions every [DANDI Cache](https://github.com/dandi-cache) repository runs.
 
@@ -7,7 +7,7 @@ A cache is one operation around a shared pipeline. The pipeline itself lives in
 cache's runtime image; these actions are the thin CI layer that drives it, versioned by their own
 interface so a cache can pin them independently of the library.
 
-## `dandi-cache/dandi-cache-actions` — run a cache update
+## `dandi-cache/dandi-cache-action` — run a cache update
 
 Skips a run that was overtaken while queued, builds the runner's environment, pulls the cache's
 runtime image, extracts the shared pipeline from it, and runs the update with full DataLad
@@ -43,7 +43,7 @@ jobs:
     # So a hung network read cannot burn a full six hours.
     timeout-minutes: 330
     steps:
-      - uses: dandi-cache/dandi-cache-actions@v0
+      - uses: dandi-cache/dandi-cache-action@v0
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           testing: ${{ inputs.testing || false }}
@@ -66,7 +66,7 @@ It outputs `ran`: `true` when the update ran, `false` when it was skipped as alr
 
 A cache with a second entry point adds a second job passing `operation:`.
 
-## `dandi-cache/dandi-cache-actions/image` — build a cache's runtime image
+## `dandi-cache/dandi-cache-action/image` — build a cache's runtime image
 
 ```yaml
 jobs:
@@ -76,7 +76,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: dandi-cache/dandi-cache-actions/image@v0
+      - uses: dandi-cache/dandi-cache-action/image@v0
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           mail-username: ${{ secrets.MAIL_USERNAME }}
