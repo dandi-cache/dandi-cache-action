@@ -8,9 +8,10 @@ name: Prepare release draft
 # releasing is opening the prepared draft and pressing Publish. The tag is created from the stored
 # name, so there is nothing left to mistype.
 #
-# The tag here is a single integer that moves, which is what a cache pins. A draft holds no tag
-# until it is published, and publishing does not move a tag that already exists, so `Move the
-# version tag` finishes the job on the publish event.
+# The draft's target moves with every merge, which is the whole window in which a version is
+# allowed to move. Publishing creates the tag and freezes it there. A released version is therefore
+# never re-cut and never re-pointed: the next release is the next integer, and a cache pinned to an
+# older one keeps running exactly the tree it was pinned to.
 
 on:
   push:
@@ -27,8 +28,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - name: Resolve the tag this tree is published under
         id: resolve
@@ -37,32 +36,33 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "This tree is published as $TAG" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Skip when that tag already names this tree
-        id: released
-        env:
-          TAG: ${{ steps.resolve.outputs.tag }}
-        run: |
-          RELEASED=$(git rev-list -n 1 "refs/tags/${TAG}" 2>/dev/null || true)
-          if [ "${RELEASED}" = "${GITHUB_SHA}" ]; then
-            echo "${TAG} already points at ${GITHUB_SHA}, so there is nothing to prepare." >> "$GITHUB_STEP_SUMMARY"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Prepare the draft
-        if: steps.released.outputs.skip != 'true'
+      - name: Refuse a version that has already been frozen
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
-          NOTES="Actions published as \`$TAG\`. Publishing this moves \`$TAG\` to ${GITHUB_SHA}, which is what a cache pins."
-          if gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null | grep -q false; then
-            echo "::error::A published release named ${TAG} already exists, so this cannot prepare a draft for it." >&2
-            echo "Delete that release, or bump VERSION, before the tag can move again." >&2
+          if gh release view "${TAG}" --json isDraft --jq .isDraft 2>/dev/null | grep -q false; then
+            echo "::error::${TAG} has been released, so it is frozen. Bump VERSION to cut the next one." >&2
             exit 1
           fi
+          # A tag is created by publishing. One standing here before its release would silently win:
+          # GitHub attaches a published release to an existing tag rather than pointing it at the
+          # draft's target, so the release would name a tree nobody prepared.
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} exists with no release behind it, so publishing would attach to it rather than to ${GITHUB_SHA}." >&2
+            echo "Delete that tag, or bump VERSION." >&2
+            exit 1
+          fi
+
+      - name: Prepare the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          NOTES="Actions published as \`$TAG\`. Publishing creates that tag at ${GITHUB_SHA} and freezes it there."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --draft --target "$GITHUB_SHA" --title "$TAG" --notes "$NOTES"
-            echo "Updated the existing draft for $TAG." >> "$GITHUB_STEP_SUMMARY"
+            echo "Moved the draft for $TAG onto $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
           else
             gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TAG" --notes "$NOTES"
             echo "Created a draft for $TAG." >> "$GITHUB_STEP_SUMMARY"

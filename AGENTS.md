@@ -16,24 +16,31 @@ The directory name is the reference a cache writes, so it is user-facing.
 
 - These actions are versioned by their own interface, the inputs, rather than by the library's release cadence.
   A cache pins a tag here and tracks the runtime image separately.
-- A change that alters or removes an input is breaking and needs a new major tag.
-  Adding an optional input with a default is not.
-- A tag here is a single integer, `v1`, and it moves to the latest release on it.
+- A tag here is a single integer, `v2`.
   Never `vX.Y.Z`.
   A cache pins the integer, so what it depends on is the interface rather than the tree, and a
   finer tag would offer a precision this repository does not keep.
   The tests reject anything else.
-- `VERSION` holds that tag, and is the only place it is decided.
+- **A release freezes its tag.**
+  A version may move while it is unreleased, which is what the draft's target does on every merge,
+  and stops moving the moment it is published.
+  A released tag is never re-pointed, so a cache pinned to one keeps running exactly the tree it
+  was pinned to.
+- The next release is therefore the next integer, not a re-cut of the last one.
+  That is true of a fix as much as of a breaking change, since neither can reach a frozen tag.
+- Adopting a release is an edit in the cache, one line in its workflow.
+  Nothing here reaches a cache that has not asked for it, which is the point of freezing rather
+  than a cost of it.
+- `VERSION` holds the tag being prepared, and is the only place it is decided.
   Bump it in the same commit that rewrites the references to this repository, since the tests read
   it rather than a literal and a reference left on the previous integer fails before the commit
   lands.
 - Release by publishing the draft that `Prepare release draft` keeps on every merge to `main`.
-  Its tag name comes from `VERSION` and its target from that commit, so the tag is never typed.
-- `Move the version tag` then follows the publish and points the tag at what was released.
-  Publishing cannot do it: a draft holds no tag until it is published, and GitHub attaches a
-  published release to a tag that already exists rather than moving it.
-  So a release reaches nobody until that workflow runs, and the failure is silent, since every
-  cache keeps running the tree the tag was last pointed at while the release looks done.
+  Its tag name comes from `VERSION` and its target from that commit, so the tag is never typed,
+  and publishing is what creates it.
+  The workflow refuses to prepare a version that has already been released, and refuses a tag
+  standing with no release behind it, since publishing would attach to that tag rather than to the
+  tree the draft names.
 - The `action-versions-agree` pre-commit hook runs the test that catches a reference drifting from
   the tag `VERSION` names.
   Those references are written by hand, so it fails at commit time rather than leaving it to CI.
