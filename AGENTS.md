@@ -18,7 +18,7 @@ The directory name is the reference a cache writes, so it is user-facing.
   A cache pins a tag here and tracks the runtime image separately.
 - A change that alters or removes an input is breaking and needs a new major tag.
   Adding an optional input with a default is not.
-- The moving major tag (`v0`) follows the latest release on that major.
+- The moving major tag (`v1`) follows the latest release on that major.
 
 ## Commits and PRs
 
