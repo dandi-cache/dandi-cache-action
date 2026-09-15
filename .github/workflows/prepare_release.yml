@@ -8,10 +8,9 @@ name: Prepare release draft
 # releasing is opening the prepared draft and pressing Publish. The tag is created from the stored
 # name, so there is nothing left to mistype.
 #
-# `Move the major tag` then follows the publish, because a cache pins `@v1` rather than an exact
-# version. That is the one part this repository does differently from the pattern it borrows: a
-# draft release cannot move a tag that already exists, so the moving tag cannot be the tag the
-# draft names.
+# The tag here is a single integer that moves, which is what a cache pins. A draft holds no tag
+# until it is published, and publishing does not move a tag that already exists, so `Move the
+# version tag` finishes the job on the publish event.
 
 on:
   push:
@@ -28,6 +27,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Resolve the tag this tree is published under
         id: resolve
@@ -36,13 +37,14 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "This tree is published as $TAG" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Skip when that tag already exists
+      - name: Skip when that tag already names this tree
         id: released
         env:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "$TAG already exists, so nothing is prepared. Bump VERSION to cut the next one." >> "$GITHUB_STEP_SUMMARY"
+          RELEASED=$(git rev-list -n 1 "refs/tags/${TAG}" 2>/dev/null || true)
+          if [ "${RELEASED}" = "${GITHUB_SHA}" ]; then
+            echo "${TAG} already points at ${GITHUB_SHA}, so there is nothing to prepare." >> "$GITHUB_STEP_SUMMARY"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -52,7 +54,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
-          NOTES="Actions published as \`$TAG\`. Publishing this moves \`${TAG%%.*}\`, which is what a cache pins."
+          NOTES="Actions published as \`$TAG\`. Publishing this moves \`$TAG\` to ${GITHUB_SHA}, which is what a cache pins."
+          if gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null | grep -q false; then
+            echo "::error::A published release named ${TAG} already exists, so this cannot prepare a draft for it." >&2
+            echo "Delete that release, or bump VERSION, before the tag can move again." >&2
+            exit 1
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --draft --target "$GITHUB_SHA" --title "$TAG" --notes "$NOTES"
             echo "Updated the existing draft for $TAG." >> "$GITHUB_STEP_SUMMARY"

@@ -10,20 +10,18 @@ _VERSION_PATH = _REPOSITORY_ROOT / "VERSION"
 _ACTION_PATHS = sorted([_REPOSITORY_ROOT / "action.yml", *_REPOSITORY_ROOT.glob("*/action.yml")])
 _SELF_REFERENCE_PATTERN = re.compile(r"dandi-cache/dandi-cache-action(?:/[a-z-]+)?@(v[\w.]+)")
 
-#: The exact tag this tree is published under, and the moving major tag a cache actually pins.
+#: The tag this tree is published under, which is the tag a cache pins.
 _VERSION = _VERSION_PATH.read_text(encoding="utf-8").strip()
-_MAJOR_TAG = _VERSION.split(".")[0]
 
 
 @pytest.mark.ai_generated
-def test_version_file_names_an_exact_release() -> None:
-    """`VERSION` is compared against the published release tag, so it has to be shaped like one.
+def test_version_file_names_a_single_integer_tag() -> None:
+    """These actions are versioned by one integer, so anything finer than that is not a tag here.
 
-    Exact rather than major: the draft release is created from this name, and a draft cannot create
-    a tag that already exists. A moving tag can therefore never be the tag a draft names, which is
-    why the major tag is moved afterwards instead.
+    A cache pins this tag and the tag moves, so the version a cache depends on is the interface,
+    not the tree. A `vX.Y.Z` would offer a precision this repository does not keep.
     """
-    assert re.fullmatch(r"v\d+\.\d+\.\d+", _VERSION) is not None, _VERSION
+    assert re.fullmatch(r"v\d+", _VERSION) is not None, _VERSION
 
 
 @pytest.mark.ai_generated
@@ -34,8 +32,8 @@ def test_actions_are_discovered() -> None:
 
 
 @pytest.mark.ai_generated
-def test_every_self_reference_names_the_major_tag_being_published() -> None:
-    """Nothing in the repository may point at a major tag other than the one `VERSION` implies.
+def test_every_self_reference_names_the_version_being_published() -> None:
+    """Nothing in the repository may point at a tag other than the one `VERSION` names.
 
     A reference left on the previous tag resolves and runs, and keeps running what it ran the day it
     was written, so neither a test of the files against each other nor a workflow run catches it.
@@ -49,7 +47,7 @@ def test_every_self_reference_names_the_major_tag_being_published() -> None:
         f"{path.relative_to(_REPOSITORY_ROOT)}: {tag}"
         for path in sources
         for tag in _SELF_REFERENCE_PATTERN.findall(path.read_text(encoding="utf-8"))
-        if tag != _MAJOR_TAG
+        if tag != _VERSION
     }
 
     assert stale == set()
