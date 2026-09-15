@@ -68,9 +68,10 @@ runs:
           echo "list=${IMAGE}:dev-${BRANCH},${IMAGE}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
         fi
 
-    # Skip authentication on pull requests: those only build the image to validate it.
+    # Unconditional, including on pull requests: a cache image is built FROM the shared base on
+    # ghcr, which is not anonymously pullable, so the build needs to authenticate to read it even
+    # when it will not push the result. The push itself stays gated on the step below.
     - name: Log in to GitHub Container Registry
-      if: ${{ github.event_name != 'pull_request' }}
       uses: docker/login-action@v4
       with:
         registry: ghcr.io
