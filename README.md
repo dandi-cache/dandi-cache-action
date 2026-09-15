@@ -82,6 +82,9 @@ jobs:
 `main` publishes `:latest` and the commit SHA; another branch publishes `dev-<branch>` and the SHA, so an environment change can be tested without overwriting `:latest`; a pull request only builds.
 The build then checks that the image really was built `FROM` the shared base, because the update extracts the orchestration from it at run time — catching a Dockerfile that is not, here rather than in the cache's next scheduled update.
 
+It then checks the cache's committed `dataset_description.json` against the `cache.toml` it is rendered from, so the copy a repository carries cannot drift from the one it publishes.
+That file is generated — `dandi-cache dataset-description --declared --output dataset_description.json` — and a cache that commits none passes, since adopting the file is what makes it checked.
+
 | Input | Default | Meaning |
 |---|---|---|
 | `token` | *required* | Pushes the image. Needs `write:packages`. |

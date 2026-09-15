@@ -107,6 +107,19 @@ runs:
         docker run --rm -v "$PWD":/repo:ro "${IMAGE}" \
           python -c "import dandi_cache_utils; dandi_cache_utils.read_config('/repo/cache.toml')"
 
+    - name: Check the committed description is what the configuration declares
+      shell: bash
+      # A cache commits the `dataset_description.json` it publishes, so that what it publishes is
+      # readable without checking out a published branch. Generated, never hand-edited, so this
+      # holds it to the `cache.toml` it came from rather than letting the two drift apart.
+      #
+      # A cache that commits no copy passes: the file is optional, and adopting it is what makes it
+      # checked. That is what lets this step exist without every cache going red until it has one.
+      run: |
+        IMAGE=$(printf '%s' "${{ steps.tags.outputs.list }}" | cut -d, -f1)
+        docker run --rm -v "$PWD":/repo:ro -w /repo "${IMAGE}" \
+          dandi-cache dataset-description --check
+
     - name: Notify on failure
       if: ${{ failure() && inputs.mail-username != '' }}
       uses: dawidd6/action-send-mail@v18
