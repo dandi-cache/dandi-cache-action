@@ -39,7 +39,7 @@ jobs:
     # So a hung network read cannot burn a full six hours.
     timeout-minutes: 330
     steps:
-      - uses: dandi-cache/dandi-cache-action@v0
+      - uses: dandi-cache/dandi-cache-action@v1
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           testing: ${{ inputs.testing || false }}
@@ -72,7 +72,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: dandi-cache/dandi-cache-action/build-and-publish-image@v0
+      - uses: dandi-cache/dandi-cache-action/build-and-publish-image@v1
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           mail-username: ${{ secrets.MAIL_USERNAME }}
@@ -92,6 +92,6 @@ The build then checks that the image really was built `FROM` the shared base, be
 ## Why a repository of its own
 
 These are *referenced*, not copied: a cache says `uses:` and gets whatever this repository publishes at the tag it pins, so a fix reaches every cache at once without touching any of them.
-Keeping them apart from the library means they are versioned by their own interface — the inputs above — rather than by the library's release cadence, and a cache can pin `@v0` while tracking the image separately.
+Keeping them apart from the library means they are versioned by their own interface — the inputs above — rather than by the library's release cadence, and a cache can pin `@v1` while tracking the image separately.
 
 The [cache template](https://github.com/dandi-cache/cache-template) is the other side of that line: what it holds is copied once when a cache is generated, and owned by the cache from then on.
