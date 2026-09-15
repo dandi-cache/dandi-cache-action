@@ -1,6 +1,6 @@
 # dandi-cache-action
 
-The GitHub Actions every [DANDI Cache](https://github.com/dandi-cache) repository runs.
+The common GitHub Actions used by every [DANDI Cache](https://github.com/dandi-cache) repository.
 
 A cache is one operation around a shared pipeline.
 The pipeline itself lives in [`dandi-cache-utils`](https://github.com/dandi-cache/dandi-cache-utils) and ships inside the cache's runtime image; these actions are the thin CI layer that drives it, versioned by their own interface so a cache can pin them independently of the library.
