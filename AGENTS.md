@@ -19,6 +19,20 @@ The directory name is the reference a cache writes, so it is user-facing.
 - A change that alters or removes an input is breaking and needs a new major tag.
   Adding an optional input with a default is not.
 - The moving major tag (`v1`) follows the latest release on that major.
+  A cache pins it rather than an exact version, so a release reaches nobody until it moves.
+- `VERSION` holds the exact tag this tree is published under, and is the only place that tag is
+  decided.
+  Bump it in the same commit that rewrites the references to this repository, since the tests read
+  it rather than a literal and a reference left on the previous major fails before the commit lands.
+- Release by publishing the draft that `Prepare release draft` keeps on every merge to `main`.
+  Its tag name comes from `VERSION` and its target from that commit, so the tag is never typed.
+  It prepares nothing when the tag already exists, since a published release is not re-cut.
+- `Move the major tag` then follows the publish and points `v1` at what was released.
+  A draft cannot create a tag that already exists, which is why the moving tag is never the tag a
+  draft names, and why moving it is a consequence of publishing rather than a step of its own.
+- The `action-versions-agree` pre-commit hook runs the test that catches a reference drifting from
+  the tag `VERSION` names.
+  Those references are written by hand, so it fails at commit time rather than leaving it to CI.
 
 ## Commits and PRs
 
