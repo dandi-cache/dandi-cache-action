@@ -1,0 +1,120 @@
+name: Build and Publish a DANDI Cache Image
+description: Build and publish a DANDI cache's runtime container image.
+author: DANDI Cache
+
+branding:
+  icon: package
+  color: blue
+
+# The container build for every DANDI cache. Tagging is handled here so that a branch build no
+# longer overwrites `:latest`, which was the one thing stopping a cache from testing an environment
+# change before merging it: `main` publishes `:latest` and the commit SHA, any other branch
+# publishes `dev-<branch>` and the SHA, and a pull request only builds, since it has no credentials
+# to push with.
+
+inputs:
+  token:
+    description: "Token used to push the image. Needs `write:packages`."
+    required: true
+  dockerfile:
+    description: "Path to the Dockerfile to build."
+    required: false
+    default: containers/Dockerfile
+  target:
+    description: "Build stage to target, for multi-stage Dockerfiles."
+    required: false
+    default: ""
+  mail-username:
+    description: "SMTP username for the failure notification. Leave empty to send no mail."
+    required: false
+    default: ""
+  mail-password:
+    description: "SMTP password for the failure notification."
+    required: false
+    default: ""
+  notify-to:
+    description: "Comma-separated recipients of the failure notification (no spaces)."
+    required: false
+    default: cody.c.baker.phd@gmail.com
+
+outputs:
+  tags:
+    description: "The comma-separated tags this build was labelled with."
+    value: ${{ steps.tags.outputs.list }}
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Work out the tags for this ref
+      id: tags
+      shell: bash
+      env:
+        IMAGE: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          # Not pushed; named only so the build step has something to label the result with.
+          echo "list=${IMAGE}:pr-${{ github.event.number }}" >> "$GITHUB_OUTPUT"
+        elif [ "${{ github.ref_name }}" = "${{ github.event.repository.default_branch }}" ]; then
+          echo "list=${IMAGE}:latest,${IMAGE}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+        else
+          # Slashes and other ref characters are not valid in a tag; flatten them.
+          BRANCH=$(printf '%s' "${{ github.ref_name }}" | tr -c 'a-zA-Z0-9_.-' '-')
+          echo "list=${IMAGE}:dev-${BRANCH},${IMAGE}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+        fi
+
+    # Skip authentication on pull requests: those only build the image to validate it.
+    - name: Log in to GitHub Container Registry
+      if: ${{ github.event_name != 'pull_request' }}
+      uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.repository_owner }}
+        password: ${{ inputs.token }}
+
+    - name: Build and push
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        file: ${{ inputs.dockerfile }}
+        target: ${{ inputs.target }}
+        push: ${{ github.event_name != 'pull_request' }}
+        # A pull request does not push, so load the result locally for the check below.
+        load: ${{ github.event_name == 'pull_request' }}
+        tags: ${{ steps.tags.outputs.list }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Check the image carries the shared pipeline
+      shell: bash
+      # A cache image must be built FROM the dandi-cache-utils base, because the update extracts
+      # the orchestration from it at run time. Catching a Dockerfile that is not leaves the failure
+      # here rather than in the cache's next scheduled update.
+      run: |
+        IMAGE=$(printf '%s' "${{ steps.tags.outputs.list }}" | cut -d, -f1)
+        SCRIPT=/opt/dandi-cache-utils/src/dandi_cache_utils/pipeline/update_pipeline.sh
+        if ! docker run --rm "${IMAGE}" test -f "${SCRIPT}"; then
+          echo "ERROR: ${IMAGE} does not carry /opt/dandi-cache-utils." >&2
+          echo "Build it FROM ghcr.io/dandi-cache/dandi-cache-utils:latest (or :nwb)." >&2
+          exit 1
+        fi
+        docker run --rm -v "$PWD":/repo:ro "${IMAGE}" \
+          python -c "import dandi_cache_utils; dandi_cache_utils.read_config('/repo/cache.toml')"
+
+    - name: Notify on failure
+      if: ${{ failure() && inputs.mail-username != '' }}
+      uses: dawidd6/action-send-mail@v18
+      with:
+        server_address: smtp.gmail.com
+        server_port: 465
+        username: ${{ inputs.mail-username }}
+        password: ${{ inputs.mail-password }}
+        subject: "CI Failure: DANDI Cache: ${{ github.event.repository.name }} container build"
+        to: ${{ inputs.notify-to }}
+        from: DANDI Cache <dandi-cache@users.noreply.github.com>
+        body: "Please check the latest container build of the DANDI Cache: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
