@@ -16,3 +16,18 @@ repos:
   rev: v2.4.2
   hooks:
   - id: codespell
+
+- repo: local
+  hooks:
+    - id: action-versions-agree
+      name: action versions agree
+      description: >-
+        The references to this repository are written by hand, so this runs the test that catches
+        them drifting from the tag `VERSION` names, at commit time rather than in CI.
+      entry: pytest tests/test_actions.py --quiet
+      language: python
+      pass_filenames: false
+      files: ^(VERSION|README\.md|action\.yml|[a-z-]+/action\.yml|tests/test_actions\.py)$
+      additional_dependencies:
+        - pytest
+        - pyyaml
