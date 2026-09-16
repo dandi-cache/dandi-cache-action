@@ -54,17 +54,46 @@ jobs:
             exit 1
           fi
 
+      - name: Write the notes from what has landed since the last release
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        # The changelog is GitHub's own, the same one the "Generate release notes" button writes,
+        # rather than a `git log` reformatted here. It reads the pull requests between the two
+        # points, so it says what changed rather than how it was committed.
+        #
+        # The bound is the last published release, since that is the last tree anyone could be
+        # pinned to. Asking for it explicitly rather than letting the API default keeps this
+        # correct if a prerelease is ever cut in between.
+        run: |
+          PREVIOUS=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)
+          if [ -n "${PREVIOUS}" ]; then
+            CHANGELOG=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f "tag_name=${TAG}" -f "target_commitish=${GITHUB_SHA}" -f "previous_tag_name=${PREVIOUS}" --jq .body)
+            echo "Changelog since ${PREVIOUS}." >> "$GITHUB_STEP_SUMMARY"
+          else
+            # No release yet, so there is no previous tree to compare against and GitHub reaches
+            # back to the first commit.
+            CHANGELOG=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f "tag_name=${TAG}" -f "target_commitish=${GITHUB_SHA}" --jq .body)
+            echo "No previous release, so the changelog covers everything." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          NOTES_FILE="${RUNNER_TEMP}/release-notes.md"
+          printf '# %s\n\n%s\n' "${TAG}" "${CHANGELOG}" > "${NOTES_FILE}"
+          echo "file=${NOTES_FILE}" >> "$GITHUB_OUTPUT"
+
       - name: Prepare the draft
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.resolve.outputs.tag }}
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
         run: |
-          NOTES="Actions published as \`$TAG\`. Publishing creates that tag at ${GITHUB_SHA} and freezes it there."
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --draft --target "$GITHUB_SHA" --title "$TAG" --notes "$NOTES"
+            gh release edit "$TAG" --draft --target "$GITHUB_SHA" --title "$TAG" --notes-file "$NOTES_FILE"
             echo "Moved the draft for $TAG onto $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
           else
-            gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TAG" --notes "$NOTES"
+            gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "$TAG" --notes-file "$NOTES_FILE"
             echo "Created a draft for $TAG." >> "$GITHUB_STEP_SUMMARY"
           fi
 
