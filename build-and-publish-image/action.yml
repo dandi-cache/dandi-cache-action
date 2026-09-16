@@ -107,6 +107,24 @@ runs:
         docker run --rm -v "$PWD":/repo:ro "${IMAGE}" \
           python -c "import dandi_cache_utils; dandi_cache_utils.read_config('/repo/cache.toml')"
 
+    - name: Check this cache's own script against the library the image carries
+      shell: bash
+      # The two checks above prove the image and the configuration. Neither touches
+      # `code/update.py`, which is the one file this repository actually contributes, so a script
+      # calling a function the image's library does not have passed everything and failed at the
+      # next scheduled update, on the real derivatives branch.
+      #
+      # An import would not catch it either: a name used inside a function body is resolved when
+      # that function runs. `check-operations` reads the syntax tree instead, and covers every
+      # operation the cache declares rather than only `update`.
+      #
+      # Needs a base image carrying dandi-cache-utils 0.1.8 or newer, which is what adopting this
+      # version of the action means; the same was true of the description check in v2.
+      run: |
+        IMAGE=$(printf '%s' "${{ steps.tags.outputs.list }}" | cut -d, -f1)
+        docker run --rm -v "$PWD":/repo:ro -w /repo "${IMAGE}" \
+          dandi-cache check-operations
+
     - name: Check the committed description is what the configuration declares
       shell: bash
       # A cache commits the `dataset_description.json` it publishes, so that what it publishes is
