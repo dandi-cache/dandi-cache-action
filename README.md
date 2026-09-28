@@ -39,7 +39,7 @@ jobs:
     # So a hung network read cannot burn a full six hours.
     timeout-minutes: 330
     steps:
-      - uses: dandi-cache/dandi-cache-action@v3
+      - uses: dandi-cache/dandi-cache-action@v4
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           testing: ${{ inputs.testing || false }}
@@ -72,7 +72,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: dandi-cache/dandi-cache-action/build-and-publish-image@v3
+      - uses: dandi-cache/dandi-cache-action/build-and-publish-image@v4
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           mail-username: ${{ secrets.MAIL_USERNAME }}
@@ -90,6 +90,10 @@ Those two checks prove the image and the configuration and never touch `code/upd
 The check reads the syntax tree rather than importing the script, because a name used inside a function body is resolved when that function runs, and it covers every operation a cache declares rather than only `update`.
 It needs a base image carrying `dandi-cache-utils` 0.1.8 or newer, which is part of what adopting `@v3` means.
 
+The image is pushed only once every one of these checks has passed.
+Until `@v4` it was pushed first and checked afterwards, so a failing check reported on an image that was already `:latest` and already what the next scheduled update would pull.
+Now a tag on ghcr only ever names an image that passed, and a failed build leaves the previous `:latest` in place.
+
 | Input | Default | Meaning |
 |---|---|---|
 | `token` | *required* | Pushes the image. Needs `write:packages`. |
@@ -101,6 +105,6 @@ It needs a base image carrying `dandi-cache-utils` 0.1.8 or newer, which is part
 
 These are *referenced*, not copied: a cache says `uses:` and gets exactly the tree the tag it pins was frozen at, so what a cache runs is decided by one line in its own workflow rather than by whatever landed here since.
 A release freezes its tag, so adopting a newer one is a deliberate edit in the cache; the trade is that nothing here can change under a cache that has not asked for it.
-Keeping them apart from the library means they are versioned by their own interface — the inputs above — rather than by the library's release cadence, and a cache can pin `@v3` while tracking the image separately.
+Keeping them apart from the library means they are versioned by their own interface — the inputs above — rather than by the library's release cadence, and a cache can pin `@v4` while tracking the image separately.
 
 The [cache template](https://github.com/dandi-cache/cache-template) is the other side of that line: what it holds is copied once when a cache is generated, and owned by the cache from then on.

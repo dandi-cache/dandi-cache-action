@@ -72,3 +72,25 @@ def test_every_optional_input_has_a_default(action_path: pathlib.Path) -> None:
 
     for name, specification in action.get("inputs", {}).items():
         assert specification.get("required") is True or "default" in specification, name
+
+
+@pytest.mark.ai_generated
+def test_the_image_is_pushed_only_after_every_check() -> None:
+    """A tag on ghcr must only ever name an image that passed the checks.
+
+    When the build step pushed, `:latest` was published before any check ran, so a failing check
+    reported on an image every cache was already pulling. The build now only loads the image, and
+    the one step that pushes comes after every step that runs something against it.
+    """
+    action = yaml.safe_load((_REPOSITORY_ROOT / "build-and-publish-image" / "action.yml").read_text(encoding="utf-8"))
+    steps = action["runs"]["steps"]
+
+    build = next(step for step in steps if step.get("uses", "").startswith("docker/build-push-action@"))
+    assert build["with"]["push"] is False
+    assert build["with"]["load"] is True
+
+    pushes = [index for index, step in enumerate(steps) if "docker push" in step.get("run", "")]
+    checks = [index for index, step in enumerate(steps) if "docker run" in step.get("run", "")]
+    assert len(pushes) == 1
+    assert checks
+    assert pushes[0] > max(checks)

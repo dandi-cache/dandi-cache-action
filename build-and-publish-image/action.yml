@@ -78,15 +78,18 @@ runs:
         username: ${{ github.repository_owner }}
         password: ${{ inputs.token }}
 
-    - name: Build and push
+    # Built into the local daemon only. The checks below run against this image, and it is pushed
+    # after they pass, so a tag on ghcr only ever names an image that passed them. Pushing here
+    # instead would publish `:latest` before any check had run, leaving a failure to report on an
+    # image every cache was already pulling.
+    - name: Build
       uses: docker/build-push-action@v7
       with:
         context: .
         file: ${{ inputs.dockerfile }}
         target: ${{ inputs.target }}
-        push: ${{ github.event_name != 'pull_request' }}
-        # A pull request does not push, so load the result locally for the check below.
-        load: ${{ github.event_name == 'pull_request' }}
+        push: false
+        load: true
         tags: ${{ steps.tags.outputs.list }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
@@ -137,6 +140,16 @@ runs:
         IMAGE=$(printf '%s' "${{ steps.tags.outputs.list }}" | cut -d, -f1)
         docker run --rm -v "$PWD":/repo:ro -w /repo "${IMAGE}" \
           dandi-cache dataset-description --check
+
+    - name: Push
+      if: ${{ github.event_name != 'pull_request' }}
+      shell: bash
+      # The exact image the checks ran, by every tag this ref publishes.
+      run: |
+        IFS=',' read -ra TAGS <<< "${{ steps.tags.outputs.list }}"
+        for TAG in "${TAGS[@]}"; do
+          docker push "${TAG}"
+        done
 
     - name: Notify on failure
       if: ${{ failure() && inputs.mail-username != '' }}
