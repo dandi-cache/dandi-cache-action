@@ -94,3 +94,151 @@ def test_the_image_is_pushed_only_after_every_check() -> None:
     assert len(pushes) == 1
     assert checks
     assert pushes[0] > max(checks)
+
+
+def _update_step(name: str) -> str:
+    action = yaml.safe_load((_REPOSITORY_ROOT / "action.yml").read_text(encoding="utf-8"))
+    return next(step for step in action["runs"]["steps"] if step.get("name") == name)
+
+
+_CHAIN_STEP_NAME = "Queue the next run while a backlog remains"
+_GATE_STEP_NAME = "Skip if a run started since this one was triggered has already succeeded"
+
+#: A stand-in for `gh`: canned JSON per subcommand, filtered through `jq` the way `gh --jq` does, and
+#: a record of every `workflow run` it was asked to make.
+_STUB_GH = """#!/bin/bash
+jq_expression=""; previous=""
+for argument in "$@"; do [ "$previous" = "--jq" ] && jq_expression="$argument"; previous="$argument"; done
+case "$*" in
+  "run view"*) echo "{\\"createdAt\\":\\"$STUB_CREATED\\"}" | jq -r "$jq_expression";;
+  "run list"*"--status success"*) echo "$STUB_SUCCESSES" | jq -r "$jq_expression";;
+  "run list"*) echo "$STUB_RUNS" | jq -r "$jq_expression";;
+  "workflow run"*) echo "$*" >> "$STUB_CALLS"; exit "${STUB_DISPATCH_EXIT:-0}";;
+esac
+"""
+
+
+def _run_step(step_name: str, tmp_path: pathlib.Path, environment: dict) -> tuple[str, str]:
+    """Run one step's script the way a composite action does, against the stub `gh`."""
+    import os
+    import shutil
+    import subprocess
+
+    if shutil.which("jq") is None or shutil.which("bash") is None:
+        pytest.skip("needs bash and jq")
+    script = (
+        _update_step(step_name)["run"]
+        .replace("${{ github.repository }}", "dandi-cache/example")
+        .replace("${{ github.run_id }}", "1")
+        .replace("${{ github.workflow }}", "Update")
+        .replace("${{ github.ref_name }}", "main")
+    )
+    stub_directory = tmp_path / "bin"
+    stub_directory.mkdir(exist_ok=True)
+    (stub_directory / "gh").write_text(_STUB_GH)
+    (stub_directory / "gh").chmod(0o755)
+    calls = tmp_path / "calls"
+    calls.touch()
+    output = tmp_path / "output"
+    completed = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", script],
+        env={
+            **os.environ,
+            "PATH": f"{stub_directory}:{os.environ['PATH']}",
+            "STUB_CALLS": str(calls),
+            "GITHUB_OUTPUT": str(output),
+            **environment,
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return calls.read_text(), output.read_text() if output.exists() else ""
+
+
+@pytest.mark.ai_generated
+@pytest.mark.parametrize(
+    ("batch", "new", "runs", "dispatch_exit", "expect_dispatch"),
+    [
+        pytest.param(500, 120, '[{"status": "in_progress"}]', 0, True, id="backlog-left"),
+        pytest.param(380, 380, '[{"status": "in_progress"}]', 0, False, id="batch-not-full"),
+        pytest.param(500, 0, '[{"status": "in_progress"}]', 0, False, id="nothing-new"),
+        pytest.param(500, 120, '[{"status": "in_progress"}, {"status": "pending"}]', 0, False, id="another-waiting"),
+        pytest.param(None, None, "[]", 0, False, id="no-batch-log"),
+        pytest.param(500, 120, '[{"status": "in_progress"}]', 1, True, id="dispatch-refused-is-not-a-failure"),
+    ],
+)
+def test_an_update_queues_the_next_run_only_while_a_backlog_remains(
+    tmp_path: pathlib.Path, batch, new, runs, dispatch_exit, expect_dispatch
+) -> None:
+    """Chain on a full batch that made progress, and on nothing else.
+
+    A full batch that recorded nothing would chain the same failures forever, and a run queued
+    while another waits would cancel it where workflows share a concurrency group.
+    """
+    logs = tmp_path / "derivatives-dataset" / "logs"
+    logs.mkdir(parents=True)
+    if batch is not None:
+        (logs / "update_2026-10-04T10-00-00Z.log").write_text(
+            f"INFO Processing {batch} items (100 already recorded).\n"
+            f"INFO Wrote 600 records to /tmp/derivatives/x.jsonl ({new} new, 3 failed) in 1.0 min\n"
+        )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "cache.toml").write_text("[operations.update]\nlimit = 500\n")
+
+    calls, _ = _run_step(
+        _CHAIN_STEP_NAME,
+        tmp_path,
+        {
+            "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_WORKSPACE": str(workspace),
+            "OPERATION": "update",
+            "LIMIT": "",
+            "WORKFLOW_REF": "dandi-cache/example/.github/workflows/update.yml@refs/heads/main",
+            "STUB_RUNS": runs,
+            "STUB_DISPATCH_EXIT": str(dispatch_exit),
+        },
+    )
+    assert bool(calls) is expect_dispatch
+    if expect_dispatch:
+        assert calls.startswith("workflow run update.yml --repo dandi-cache/example --ref main")
+
+
+@pytest.mark.ai_generated
+def test_only_an_update_outside_testing_chains() -> None:
+    """A refresh's batch is always full, so it would never stop; a testing run writes nothing real."""
+    condition = _update_step(_CHAIN_STEP_NAME)["if"]
+    assert "inputs.operation == 'update'" in condition
+    assert "inputs.testing != 'true'" in condition
+    assert "steps.gate.outputs.should-run == 'true'" in condition
+
+
+@pytest.mark.ai_generated
+@pytest.mark.parametrize(
+    ("successes", "should_run"),
+    [
+        pytest.param('[{"startedAt": "2026-10-04T10:00:00Z"}]', "true", id="queued-behind-an-earlier-run"),
+        pytest.param(
+            '[{"startedAt": "2026-10-04T12:30:00Z"}, {"startedAt": "2026-10-04T10:00:00Z"}]',
+            "false",
+            id="a-later-run-already-succeeded",
+        ),
+        pytest.param("[]", "true", id="no-successes"),
+    ],
+)
+def test_a_queued_run_is_skipped_only_when_a_later_started_run_succeeded(
+    tmp_path: pathlib.Path, successes: str, should_run: str
+) -> None:
+    """A run that was already going when this one was queued did not cover it.
+
+    That is the run a chained or scheduled run waits behind, and with a batch limit it left the
+    rest of the backlog. The gate used to skip on any run *finishing* after this one was queued,
+    which skipped exactly the run that should follow it.
+    """
+    _, output = _run_step(
+        _GATE_STEP_NAME,
+        tmp_path,
+        {"STUB_CREATED": "2026-10-04T12:00:00Z", "STUB_SUCCESSES": successes},
+    )
+    assert output.strip() == f"should-run={should_run}"

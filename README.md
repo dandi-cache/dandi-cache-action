@@ -39,7 +39,7 @@ jobs:
     # So a hung network read cannot burn a full six hours.
     timeout-minutes: 330
     steps:
-      - uses: dandi-cache/dandi-cache-action@v4
+      - uses: dandi-cache/dandi-cache-action@v5
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           testing: ${{ inputs.testing || false }}
@@ -50,17 +50,32 @@ jobs:
 
 | Input | Default | Meaning |
 |---|---|---|
-| `token` | *required* | Checks out the repository, pushes the results, reads the runtime image. Needs `contents: write` on the cache and `read:packages`. |
+| `token` | *required* | Checks out the repository, pushes the results, reads the runtime image, and queues the next run. Needs `contents: write` and `actions: write` on the cache, and `read:packages`. |
 | `operation` | `update` | Which entry point from the cache's `[operations]` table to run. |
 | `testing` | `false` | Process a handful of items into `testing_`-prefixed files, leaving the cache untouched. |
 | `limit` | *the cache's* | Cap on new items processed this run. |
 | `image` | *the cache's* | Runtime image; empty uses the one `cache.toml` declares. |
+| `chain` | `true` | Queue the next run when an update ends with backlog left. `false` leaves it to the schedule. |
 | `mail-username` / `mail-password` | empty | SMTP credentials for the failure notification. Empty sends no mail. |
 | `notify-to` | `cody.c.baker.phd@gmail.com` | Who to notify. |
 
 It outputs `ran`: `true` when the update ran, `false` when it was skipped as already done.
 
 A cache with a second entry point adds a second job passing `operation:`.
+
+### Runs follow each other while a backlog remains
+
+GitHub delays and drops scheduled runs under load, so a cache with a backlog used to sit idle for hours between runs whatever its cron asked for.
+An update that ends with backlog left now queues the next run itself, as soon as it finishes.
+Backlog is left when its batch was full and it recorded something new; the second condition keeps a run that only re-fails the same items from chaining forever.
+Both are read from the run's own log, the library's `Processing N items` and `(K new, …)` lines.
+
+Only `update` chains, since a refresh re-assesses what is already recorded and its batch is always full.
+Nothing is queued while another run of the repository is waiting, which matters where workflows share a concurrency group: a new pending run would cancel the waiting one.
+A dispatch the token is not allowed to make is a warning, not a failed update, and the schedule starts the next run instead.
+
+A queued run is skipped only when a run that *started* after it was queued has since succeeded, since that run read everything it would have.
+Until `@v5` it was skipped when any run *finished* after it was queued, which skipped exactly the run that should follow a long one: the run it waited behind had left the rest of the backlog.
 
 ## `dandi-cache/dandi-cache-action/build-and-publish-image` — build and publish the runtime image
 
@@ -72,7 +87,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: dandi-cache/dandi-cache-action/build-and-publish-image@v4
+      - uses: dandi-cache/dandi-cache-action/build-and-publish-image@v5
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           mail-username: ${{ secrets.MAIL_USERNAME }}
@@ -105,6 +120,6 @@ Now a tag on ghcr only ever names an image that passed, and a failed build leave
 
 These are *referenced*, not copied: a cache says `uses:` and gets exactly the tree the tag it pins was frozen at, so what a cache runs is decided by one line in its own workflow rather than by whatever landed here since.
 A release freezes its tag, so adopting a newer one is a deliberate edit in the cache; the trade is that nothing here can change under a cache that has not asked for it.
-Keeping them apart from the library means they are versioned by their own interface — the inputs above — rather than by the library's release cadence, and a cache can pin `@v4` while tracking the image separately.
+Keeping them apart from the library means they are versioned by their own interface — the inputs above — rather than by the library's release cadence, and a cache can pin `@v5` while tracking the image separately.
 
 The [cache template](https://github.com/dandi-cache/cache-template) is the other side of that line: what it holds is copied once when a cache is generated, and owned by the cache from then on.

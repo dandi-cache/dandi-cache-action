@@ -38,6 +38,12 @@ inputs:
     description: "Runtime image. Empty uses the image cache.toml declares for this cache."
     required: false
     default: ""
+  chain:
+    description: >-
+      Queue the next run as soon as this one finishes when an update ends with backlog left: its
+      batch was full and it recorded something new. "false" leaves the next run to the schedule.
+    required: false
+    default: "true"
   mail-username:
     description: "SMTP username for the failure notification. Leave empty to send no mail."
     required: false
@@ -60,23 +66,25 @@ runs:
   using: composite
   steps:
     # Runs are serialized by the caller's concurrency group, so a run triggered while another is
-    # executing waits rather than being cancelled. By the time it starts, the update it would
-    # perform has just been done -- unless the preceding run failed, in which case this one
-    # proceeds as a fresh attempt.
-    - name: Skip if a run already completed while this one was queued
+    # executing waits rather than being cancelled. It is redundant only if a run that *started*
+    # after it was triggered has since succeeded: that run read everything this one would have. A
+    # run that was already going when this one was triggered may have missed what arrived since,
+    # and with a batch limit it certainly left the rest of the backlog, so the queued run goes
+    # ahead. A run queued by the step that chains updates is one of those, and goes ahead too. A
+    # failed run never counts, so the next one is always a fresh attempt.
+    - name: Skip if a run started since this one was triggered has already succeeded
       id: gate
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
       run: |
         CREATED_AT=$(gh run view "${{ github.run_id }}" --repo "${{ github.repository }}" --json createdAt --jq '.createdAt')
-        LAST_SUCCESS_AT=$(gh run list --repo "${{ github.repository }}" --workflow "${{ github.workflow }}" --status success --limit 1 --json updatedAt --jq '.[0].updatedAt // empty')
+        # ISO 8601 UTC timestamps compare correctly as strings.
+        COVERED_BY=$(gh run list --repo "${{ github.repository }}" --workflow "${{ github.workflow }}" --status success --limit 20 --json startedAt \
+          --jq "[.[] | select(.startedAt > \"${CREATED_AT}\")] | .[0].startedAt // empty")
 
-        # ISO 8601 UTC timestamps compare correctly as strings. A successful run that finished
-        # after this run was triggered means this run spent its life queued behind it and would
-        # only repeat the same work.
-        if [ -n "${LAST_SUCCESS_AT}" ] && [ "${LAST_SUCCESS_AT}" \> "${CREATED_AT}" ]; then
-          echo "A run succeeded at ${LAST_SUCCESS_AT}, after this one was triggered at ${CREATED_AT}; skipping."
+        if [ -n "${COVERED_BY}" ]; then
+          echo "A run that started at ${COVERED_BY}, after this one was triggered at ${CREATED_AT}, has succeeded; skipping."
           echo "should-run=false" >> "$GITHUB_OUTPUT"
         else
           echo "should-run=true" >> "$GITHUB_OUTPUT"
@@ -159,6 +167,66 @@ runs:
         GITHUB_SHA: ${{ github.sha }}
         DANDI_CACHE_UTILS_DIR: ${{ steps.pipeline.outputs.directory }}
       run: bash "${{ steps.pipeline.outputs.directory }}/src/dandi_cache_utils/pipeline/update_pipeline.sh"
+
+    # GitHub's scheduler delays and drops scheduled runs under load, so a cache with a backlog can
+    # sit idle for hours between runs whatever its cron says. An update that ends with backlog left
+    # therefore queues the next one itself: its batch was full, and it recorded something new, which
+    # is what keeps a run that only re-fails the same items from chaining forever. It reads the
+    # run's own log, whose two lines below are the library's report of the batch.
+    #
+    # Only `update` chains. A refresh re-assesses what is already recorded, so its batch is always
+    # full and it would never stop. Nothing is queued if another run of this repository is already
+    # waiting, since that one runs next anyway, and in a repository whose workflows share a
+    # concurrency group a new pending run would cancel it. A dispatch that fails is a warning, not
+    # a failed update: the schedule still runs the next one.
+    - name: Queue the next run while a backlog remains
+      if: ${{ steps.gate.outputs.should-run == 'true' && inputs.chain == 'true' && inputs.testing != 'true' && inputs.operation == 'update' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        OPERATION: ${{ inputs.operation }}
+        LIMIT: ${{ inputs.limit }}
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+      run: |
+        LOG=$(ls -t "${RUNNER_TEMP}/derivatives-dataset/logs/${OPERATION}_"*.log 2>/dev/null | head -n 1 || true)
+        if [ -z "${LOG}" ]; then
+          echo "No ${OPERATION} log to read; leaving the next run to the schedule."
+          exit 0
+        fi
+        BATCH=$(grep -oE 'Processing [0-9]+ items' "${LOG}" | tail -n 1 | grep -oE '[0-9]+' || true)
+        NEW=$(grep -oE '\([0-9]+ new, ' "${LOG}" | tail -n 1 | grep -oE '[0-9]+' || true)
+        if [ -z "${LIMIT}" ]; then
+          LIMIT=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb")).get("operations", {}).get(sys.argv[2], {}).get("limit", ""))' \
+            "${GITHUB_WORKSPACE}/cache.toml" "${OPERATION}")
+        fi
+        echo "Batch ${BATCH:-unknown} of limit ${LIMIT:-none}; ${NEW:-unknown} new."
+
+        if [ -z "${BATCH}" ] || [ -z "${LIMIT}" ] || [ -z "${NEW}" ]; then
+          echo "Not an incremental batch with a limit; leaving the next run to the schedule."
+          exit 0
+        fi
+        if [ "${BATCH}" -lt "${LIMIT}" ]; then
+          echo "The batch was not full, so the backlog is cleared."
+          exit 0
+        fi
+        if [ "${NEW}" -eq 0 ]; then
+          echo "A full batch recorded nothing new; not chaining a run that would repeat it."
+          exit 0
+        fi
+
+        WAITING=$(gh run list --repo "${{ github.repository }}" --limit 50 --json status \
+          --jq '[.[] | select(.status == "queued" or .status == "pending" or .status == "waiting" or .status == "requested")] | length')
+        if [ "${WAITING}" -gt 0 ]; then
+          echo "${WAITING} run(s) of this repository already waiting; it runs next."
+          exit 0
+        fi
+
+        WORKFLOW_FILE=$(basename "${WORKFLOW_REF%%@*}")
+        if gh workflow run "${WORKFLOW_FILE}" --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"; then
+          echo "Queued the next ${WORKFLOW_FILE} run: the backlog is not cleared."
+        else
+          echo "::warning::Could not queue the next run; the schedule will start it instead."
+        fi
 
     # Inside the action rather than in every cache's workflow: an update that fails silently at
     # 03:00 is one nobody finds until a consumer notices stale data. Supplying no SMTP username
