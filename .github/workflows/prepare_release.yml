@@ -11,7 +11,8 @@ name: Prepare release draft
 # The draft's target moves with every merge, which is the whole window in which a version is
 # allowed to move. Publishing creates the tag and freezes it there. A released version is therefore
 # never re-cut and never re-pointed: the next release is the next integer, and a cache pinned to an
-# older one keeps running exactly the tree it was pinned to.
+# older one keeps running exactly the tree it was pinned to. A merge that changes no `action.yml`
+# changes nothing a cache runs, so it waits for the next bump rather than failing.
 
 on:
   push:
@@ -28,6 +29,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # The released tag is compared against below.
+          fetch-depth: 0
 
       - name: Resolve the tag this tree is published under
         id: resolve
@@ -37,11 +41,20 @@ jobs:
           echo "This tree is published as $TAG" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Refuse a version that has already been frozen
+        id: frozen
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           if gh release view "${TAG}" --json isDraft --jq .isDraft 2>/dev/null | grep -q false; then
+            # What a cache runs is the `action.yml` it names. A merge that leaves every one of them as
+            # the frozen tag has them, such as a pre-commit autoupdate, has nothing to release, so it
+            # is not a forgotten bump.
+            if git diff --quiet "refs/tags/${TAG}" "${GITHUB_SHA}" -- action.yml '*/action.yml'; then
+              echo "prepare=false" >> "$GITHUB_OUTPUT"
+              echo "No action has changed since ${TAG} was released, so there is nothing to draft." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
             echo "::error::${TAG} has been released, so it is frozen. Bump VERSION to cut the next one." >&2
             exit 1
           fi
@@ -53,8 +66,10 @@ jobs:
             echo "Delete that tag, or bump VERSION." >&2
             exit 1
           fi
+          echo "prepare=true" >> "$GITHUB_OUTPUT"
 
       - name: Write the notes from what has landed since the last release
+        if: ${{ steps.frozen.outputs.prepare == 'true' }}
         id: notes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -84,6 +99,7 @@ jobs:
           echo "file=${NOTES_FILE}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare the draft
+        if: ${{ steps.frozen.outputs.prepare == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.resolve.outputs.tag }}

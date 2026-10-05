@@ -242,3 +242,76 @@ def test_a_queued_run_is_skipped_only_when_a_later_started_run_succeeded(
         {"STUB_CREATED": "2026-10-04T12:00:00Z", "STUB_SUCCESSES": successes},
     )
     assert output.strip() == f"should-run={should_run}"
+
+
+_RELEASE_WORKFLOW_PATH = _REPOSITORY_ROOT / ".github" / "workflows" / "prepare_release.yml"
+
+
+@pytest.mark.ai_generated
+@pytest.mark.parametrize(
+    ("released", "changed_path", "expect_exit", "expect_prepare"),
+    [
+        pytest.param(True, ".pre-commit-config.yaml", 0, "false", id="released-and-no-action-changed"),
+        pytest.param(True, "action.yml", 1, None, id="released-and-the-action-changed"),
+        pytest.param(True, "build-and-publish-image/action.yml", 1, None, id="released-and-a-nested-action-changed"),
+        pytest.param(False, "action.yml", 0, "true", id="not-released-yet"),
+    ],
+)
+def test_a_frozen_version_refuses_only_a_change_to_an_action(
+    tmp_path: pathlib.Path, released: bool, changed_path: str, expect_exit: int, expect_prepare: str | None
+) -> None:
+    """A pre-commit autoupdate on a released version is not a forgotten bump.
+
+    Failing on it sent a failure notice every quarter for a merge that changed nothing a cache runs.
+    """
+    import os
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None or shutil.which("bash") is None:
+        pytest.skip("needs bash and git")
+    workflow = yaml.safe_load(_RELEASE_WORKFLOW_PATH.read_text(encoding="utf-8"))
+    (step,) = [step for step in workflow["jobs"]["Draft"]["steps"] if step.get("id") == "frozen"]
+
+    def git(*arguments: str, cwd: pathlib.Path) -> str:
+        return subprocess.run(["git", *arguments], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+    origin = tmp_path / "origin.git"
+    git("init", "--quiet", "--bare", str(origin), cwd=tmp_path)
+    clone = tmp_path / "clone"
+    git("init", "--quiet", str(clone), cwd=tmp_path)
+    git("config", "user.email", "test@example.com", cwd=clone)
+    git("config", "user.name", "test", cwd=clone)
+    git("remote", "add", "origin", str(origin), cwd=clone)
+    for path in ("action.yml", "build-and-publish-image/action.yml", ".pre-commit-config.yaml"):
+        (clone / path).parent.mkdir(parents=True, exist_ok=True)
+        (clone / path).write_text("before\n")
+    git("add", ".", cwd=clone)
+    git("commit", "--quiet", "-m", "released", cwd=clone)
+    if released:
+        git("tag", "v5", cwd=clone)
+    (clone / changed_path).write_text("after\n")
+    git("commit", "--quiet", "-am", "merged", cwd=clone)
+
+    stub_directory = tmp_path / "bin"
+    stub_directory.mkdir()
+    (stub_directory / "gh").write_text(f"#!/bin/bash\necho {'false' if released else ''}\n")
+    (stub_directory / "gh").chmod(0o755)
+    output = tmp_path / "output"
+    completed = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", step["run"]],
+        cwd=clone,
+        env={
+            **os.environ,
+            "PATH": f"{stub_directory}:{os.environ['PATH']}",
+            "TAG": "v5",
+            "GITHUB_SHA": git("rev-parse", "HEAD", cwd=clone).strip(),
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == expect_exit, completed.stderr
+    if expect_prepare is not None:
+        assert output.read_text().strip() == f"prepare={expect_prepare}"

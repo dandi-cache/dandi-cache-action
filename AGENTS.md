@@ -41,6 +41,8 @@ The directory name is the reference a cache writes, so it is user-facing.
   The workflow refuses to prepare a version that has already been released, and refuses a tag
   standing with no release behind it, since publishing would attach to that tag rather than to the
   tree the draft names.
+  A merge that changes no `action.yml`, such as a pre-commit autoupdate, has nothing to release,
+  so on a released version it prepares nothing rather than failing.
 - The `action-versions-agree` pre-commit hook runs the test that catches a reference drifting from
   the tag `VERSION` names.
   Those references are written by hand, so it fails at commit time rather than leaving it to CI.
