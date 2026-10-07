@@ -154,6 +154,7 @@ runs:
 
     - name: Run the update with provenance
       if: ${{ steps.gate.outputs.should-run == 'true' }}
+      id: run
       shell: bash
       env:
         REPO_URL: https://x-access-token:${{ inputs.token }}@github.com/${{ github.repository }}.git
@@ -166,7 +167,26 @@ runs:
         LIMIT: ${{ inputs.limit }}
         GITHUB_SHA: ${{ github.sha }}
         DANDI_CACHE_UTILS_DIR: ${{ steps.pipeline.outputs.directory }}
+        # The pipeline stages `dist` and the next step publishes it.
+        PUBLISH_DIST: "false"
       run: bash "${{ steps.pipeline.outputs.directory }}/src/dandi_cache_utils/pipeline/update_pipeline.sh"
+
+    # The staged directory holds exactly what the pipeline used to push itself: each declared output,
+    # compressed, beside `dataset_description.json`. The `files` format publishes them as they are, as
+    # the orphan branch's one commit, so every consumer URL stays what it was. It pushes with the
+    # checkout's token, and leaves the branch alone when nothing in it changed.
+    #
+    # Nothing is staged when the run produced none of its declared outputs, and `dist` is then left
+    # as it was.
+    - name: Publish dist
+      if: ${{ steps.gate.outputs.should-run == 'true' && steps.run.outputs.dist-directory != '' }}
+      uses: CodyCBakerPhD/dist-bundle-action@v2
+      with:
+        root: ${{ steps.run.outputs.dist-directory }}
+        paths: .
+        format: files
+        branch: dist
+        commit-message: Publish ${{ github.event.repository.name }}
 
     # GitHub's scheduler delays and drops scheduled runs under load, so a cache with a backlog can
     # sit idle for hours between runs whatever its cron says. An update that ends with backlog left

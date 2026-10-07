@@ -39,7 +39,7 @@ jobs:
     # So a hung network read cannot burn a full six hours.
     timeout-minutes: 330
     steps:
-      - uses: dandi-cache/dandi-cache-action@v5
+      - uses: dandi-cache/dandi-cache-action@v6
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           testing: ${{ inputs.testing || false }}
@@ -77,6 +77,13 @@ A dispatch the token is not allowed to make is a warning, not a failed update, a
 A queued run is skipped only when a run that *started* after it was queued has since succeeded, since that run read everything it would have.
 Until `@v5` it was skipped when any run *finished* after it was queued, which skipped exactly the run that should follow a long one: the run it waited behind had left the rest of the backlog.
 
+### `dist` is published by `dist-bundle-action`
+
+The pipeline stages the `dist` content, each declared output compressed beside `dataset_description.json`, and [`CodyCBakerPhD/dist-bundle-action`](https://github.com/CodyCBakerPhD/dist-bundle-action) publishes it with its `files` format.
+That writes the same files to the same paths as the pipeline's own push did, so every consumer URL is unchanged.
+The branch still holds a single commit, and a run that changed nothing in it leaves it alone rather than force-pushing an identical commit.
+Until `@v6` the pipeline pushed `dist` itself.
+
 ## `dandi-cache/dandi-cache-action/build-and-publish-image` — build and publish the runtime image
 
 ```yaml
@@ -87,7 +94,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: dandi-cache/dandi-cache-action/build-and-publish-image@v5
+      - uses: dandi-cache/dandi-cache-action/build-and-publish-image@v6
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           mail-username: ${{ secrets.MAIL_USERNAME }}
@@ -120,6 +127,6 @@ Now a tag on ghcr only ever names an image that passed, and a failed build leave
 
 These are *referenced*, not copied: a cache says `uses:` and gets exactly the tree the tag it pins was frozen at, so what a cache runs is decided by one line in its own workflow rather than by whatever landed here since.
 A release freezes its tag, so adopting a newer one is a deliberate edit in the cache; the trade is that nothing here can change under a cache that has not asked for it.
-Keeping them apart from the library means they are versioned by their own interface — the inputs above — rather than by the library's release cadence, and a cache can pin `@v5` while tracking the image separately.
+Keeping them apart from the library means they are versioned by their own interface — the inputs above — rather than by the library's release cadence, and a cache can pin `@v6` while tracking the image separately.
 
 The [cache template](https://github.com/dandi-cache/cache-template) is the other side of that line: what it holds is copied once when a cache is generated, and owned by the cache from then on.
