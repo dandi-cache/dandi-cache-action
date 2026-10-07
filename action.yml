@@ -248,6 +248,26 @@ runs:
           echo "::warning::Could not queue the next run; the schedule will start it instead."
         fi
 
+    # GitHub refuses a push carrying any file over 100 MiB, after the whole run's work is done. The
+    # pipeline checks what it is about to push, and reports every file past 80% of that limit as
+    # these two outputs, so the warning arrives while the run still succeeds and there is room to
+    # act: usually by declaring the output in `split` in cache.toml. A file past the limit fails the
+    # run too, and this says which one and why.
+    - name: Notify on files nearing GitHub's size limit
+      if: ${{ always() && inputs.mail-username != '' && (steps.run.outputs.size-warnings != '' || steps.run.outputs.dist-size-warnings != '') }}
+      uses: dawidd6/action-send-mail@v18
+      with:
+        server_address: smtp.gmail.com
+        server_port: 465
+        username: ${{ inputs.mail-username }}
+        password: ${{ inputs.mail-password }}
+        subject: "Size warning: DANDI Cache: ${{ github.event.repository.name }} has files nearing GitHub's 100 MiB limit"
+        to: ${{ inputs.notify-to }}
+        from: DANDI Cache <dandi-cache@users.noreply.github.com>
+        body: |
+          ${{ steps.run.outputs.size-warnings }}${{ steps.run.outputs.dist-size-warnings }}
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
     # Inside the action rather than in every cache's workflow: an update that fails silently at
     # 03:00 is one nobody finds until a consumer notices stale data. Supplying no SMTP username
     # turns it off.

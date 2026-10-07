@@ -56,7 +56,7 @@ jobs:
 | `limit` | *the cache's* | Cap on new items processed this run. |
 | `image` | *the cache's* | Runtime image; empty uses the one `cache.toml` declares. |
 | `chain` | `true` | Queue the next run when an update ends with backlog left. `false` leaves it to the schedule. |
-| `mail-username` / `mail-password` | empty | SMTP credentials for the failure notification. Empty sends no mail. |
+| `mail-username` / `mail-password` | empty | SMTP credentials for the notifications: a failed run, and a file past 80% of GitHub's 100 MiB limit on `derivatives` or `dist` (sent even when the run succeeds). Empty sends no mail. |
 | `notify-to` | `cody.c.baker.phd@gmail.com` | Who to notify. |
 
 It outputs `ran`: `true` when the update ran, `false` when it was skipped as already done.

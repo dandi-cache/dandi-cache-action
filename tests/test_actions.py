@@ -331,3 +331,14 @@ def test_dist_is_staged_by_the_pipeline_and_published_as_files() -> None:
     assert publish["with"]["root"] == "${{ steps.run.outputs.dist-directory }}"
     assert "steps.run.outputs.dist-directory != ''" in publish["if"]
     assert names.index("Publish dist") == names.index("Run the update with provenance") + 1
+
+
+def test_files_nearing_the_size_limit_send_their_own_notification() -> None:
+    """The pipeline reports files near GitHub's limit as step outputs, and those reach someone even on a green run."""
+    notify = _update_step("Notify on files nearing GitHub's size limit")
+
+    assert notify["uses"].startswith("dawidd6/action-send-mail@")
+    assert notify["if"].startswith("${{ always() && inputs.mail-username != ''")
+    for output in ("steps.run.outputs.size-warnings", "steps.run.outputs.dist-size-warnings"):
+        assert f"{output} != ''" in notify["if"]
+        assert output in notify["with"]["body"]
