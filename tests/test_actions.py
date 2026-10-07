@@ -315,3 +315,30 @@ def test_a_frozen_version_refuses_only_a_change_to_an_action(
     assert completed.returncode == expect_exit, completed.stderr
     if expect_prepare is not None:
         assert output.read_text().strip() == f"prepare={expect_prepare}"
+
+
+@pytest.mark.ai_generated
+def test_dist_is_staged_by_the_pipeline_and_published_as_files() -> None:
+    """The pipeline stages `dist` and dist-bundle-action publishes it, so every consumer URL stays the same."""
+    action = yaml.safe_load((_REPOSITORY_ROOT / "action.yml").read_text(encoding="utf-8"))
+    names = [step.get("name") for step in action["runs"]["steps"]]
+    run = _update_step("Run the update with provenance")
+    publish = _update_step("Publish dist")
+
+    assert run["env"]["PUBLISH_DIST"] == "false"
+    assert re.fullmatch(r"CodyCBakerPhD/dist-bundle-action@v\d+", publish["uses"]) is not None
+    assert publish["with"]["format"] == "files"
+    assert publish["with"]["root"] == "${{ steps.run.outputs.dist-directory }}"
+    assert "steps.run.outputs.dist-directory != ''" in publish["if"]
+    assert names.index("Publish dist") == names.index("Run the update with provenance") + 1
+
+
+def test_files_nearing_the_size_limit_send_their_own_notification() -> None:
+    """The pipeline reports files near GitHub's limit as step outputs, and those reach someone even on a green run."""
+    notify = _update_step("Notify on files nearing GitHub's size limit")
+
+    assert notify["uses"].startswith("dawidd6/action-send-mail@")
+    assert notify["if"].startswith("${{ always() && inputs.mail-username != ''")
+    for output in ("steps.run.outputs.size-warnings", "steps.run.outputs.dist-size-warnings"):
+        assert f"{output} != ''" in notify["if"]
+        assert output in notify["with"]["body"]
