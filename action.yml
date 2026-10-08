@@ -78,10 +78,22 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.token }}
       run: |
-        CREATED_AT=$(gh run view "${{ github.run_id }}" --repo "${{ github.repository }}" --json createdAt --jq '.createdAt')
+        # The API can briefly answer 404 for a run that has only just started, so this retries, and
+        # an answer it never gets means the run goes ahead: a redundant run costs less than a failed
+        # one, and skipping is only ever an economy.
+        for attempt in 1 2 3 4; do
+          CREATED_AT=$(gh run view "${{ github.run_id }}" --repo "${{ github.repository }}" --json createdAt --jq '.createdAt') && break
+          CREATED_AT=""
+          sleep $((attempt * 5))
+        done
+        if [ -z "${CREATED_AT}" ]; then
+          echo "::warning::Could not read when this run was triggered; running rather than risk skipping."
+          echo "should-run=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         # ISO 8601 UTC timestamps compare correctly as strings.
         COVERED_BY=$(gh run list --repo "${{ github.repository }}" --workflow "${{ github.workflow }}" --status success --limit 20 --json startedAt \
-          --jq "[.[] | select(.startedAt > \"${CREATED_AT}\")] | .[0].startedAt // empty")
+          --jq "[.[] | select(.startedAt > \"${CREATED_AT}\")] | .[0].startedAt // empty") || COVERED_BY=""
 
         if [ -n "${COVERED_BY}" ]; then
           echo "A run that started at ${COVERED_BY}, after this one was triggered at ${CREATED_AT}, has succeeded; skipping."
