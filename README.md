@@ -39,7 +39,7 @@ jobs:
     # So a hung network read cannot burn a full six hours.
     timeout-minutes: 330
     steps:
-      - uses: dandi-cache/dandi-cache-action@v6
+      - uses: dandi-cache/dandi-cache-action@v7
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           testing: ${{ inputs.testing || false }}
@@ -94,7 +94,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: dandi-cache/dandi-cache-action/build-and-publish-image@v6
+      - uses: dandi-cache/dandi-cache-action/build-and-publish-image@v7
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           mail-username: ${{ secrets.MAIL_USERNAME }}
@@ -127,6 +127,6 @@ Now a tag on ghcr only ever names an image that passed, and a failed build leave
 
 These are *referenced*, not copied: a cache says `uses:` and gets exactly the tree the tag it pins was frozen at, so what a cache runs is decided by one line in its own workflow rather than by whatever landed here since.
 A release freezes its tag, so adopting a newer one is a deliberate edit in the cache; the trade is that nothing here can change under a cache that has not asked for it.
-Keeping them apart from the library means they are versioned by their own interface — the inputs above — rather than by the library's release cadence, and a cache can pin `@v6` while tracking the image separately.
+Keeping them apart from the library means they are versioned by their own interface — the inputs above — rather than by the library's release cadence, and a cache can pin `@v7` while tracking the image separately.
 
 The [cache template](https://github.com/dandi-cache/cache-template) is the other side of that line: what it holds is copied once when a cache is generated, and owned by the cache from then on.
