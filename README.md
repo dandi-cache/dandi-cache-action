@@ -112,6 +112,11 @@ Those two checks prove the image and the configuration and never touch `code/upd
 The check reads the syntax tree rather than importing the script, because a name used inside a function body is resolved when that function runs, and it covers every operation a cache declares rather than only `update`.
 It needs a base image carrying `dandi-cache-utils` 0.1.8 or newer, which is part of what adopting `@v3` means.
 
+On a pull request it also first checks that the cache's version was bumped, before anything is built.
+The `[project] version` in `envs/pyproject.toml` is the one place a cache's state is named, so a pull request that changes the cache's `code/`, `cache.toml`, `envs/pyproject.toml` or `containers/` must change it, and one that changes only a workflow or the documentation need not.
+It compares the pull request with the base it merges into, and passes where the base has no version yet to bump from.
+It is the same rule `dandi-cache-utils` holds its own version to.
+
 The image is pushed only once every one of these checks has passed.
 Until `@v4` it was pushed first and checked afterwards, so a failing check reported on an image that was already `:latest` and already what the next scheduled update would pull.
 Now a tag on ghcr only ever names an image that passed, and a failed build leaves the previous `:latest` in place.
@@ -122,6 +127,8 @@ Now a tag on ghcr only ever names an image that passed, and a failed build leave
 | `dockerfile` | `containers/Dockerfile` | What to build. |
 | `target` | empty | Build stage, for a multi-stage Dockerfile. |
 | `mail-username` / `mail-password` / `notify-to` | as above | The failure notification. |
+| `version-file` | `envs/pyproject.toml` | The TOML file whose `[project] version` must change with the cache. Empty skips the version check. |
+| `version-paths` | `code cache.toml envs/pyproject.toml containers` | Space-separated paths whose change calls for a bump. |
 
 ## Why a repository of its own
 

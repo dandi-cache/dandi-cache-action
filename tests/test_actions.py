@@ -342,3 +342,157 @@ def test_files_nearing_the_size_limit_send_their_own_notification() -> None:
     for output in ("steps.run.outputs.size-warnings", "steps.run.outputs.dist-size-warnings"):
         assert f"{output} != ''" in notify["if"]
         assert output in notify["with"]["body"]
+
+
+_IMAGE_ACTION_PATH = _REPOSITORY_ROOT / "build-and-publish-image" / "action.yml"
+_VERSION_CHECK_STEP_NAME = "Check the version was bumped"
+_VERSIONED_FILE = "envs/pyproject.toml"
+
+
+def _image_action() -> dict:
+    return yaml.safe_load(_IMAGE_ACTION_PATH.read_text(encoding="utf-8"))
+
+
+def _run_version_check(clone: pathlib.Path, tmp_path: pathlib.Path) -> "subprocess.CompletedProcess[str]":
+    """Run the version check's script in `clone`, with the inputs it would be given by default."""
+    import os
+    import subprocess
+
+    action = _image_action()
+    (step,) = [step for step in action["runs"]["steps"] if step.get("name") == _VERSION_CHECK_STEP_NAME]
+    return subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", step["run"]],
+        cwd=clone,
+        env={
+            **os.environ,
+            "VERSION_FILE": action["inputs"]["version-file"]["default"],
+            "VERSION_PATHS": action["inputs"]["version-paths"]["default"],
+        },
+        capture_output=True,
+        text=True,
+    )
+
+
+def _git(clone: pathlib.Path, *arguments: str) -> str:
+    import subprocess
+
+    return subprocess.run(["git", *arguments], cwd=clone, check=True, capture_output=True, text=True).stdout
+
+
+def _cache_with_a_base_commit(tmp_path: pathlib.Path) -> pathlib.Path:
+    """A cache repository with one commit, the way a base branch has before a pull request."""
+    import shutil
+
+    if shutil.which("git") is None or shutil.which("bash") is None:
+        pytest.skip("needs bash and git")
+    clone = tmp_path / "cache"
+    clone.mkdir()
+    _git(clone, "init", "--quiet", "--initial-branch=main")
+    _git(clone, "config", "user.email", "test@example.com")
+    _git(clone, "config", "user.name", "test")
+    files = {
+        _VERSIONED_FILE: '[project]\nname = "example"\nversion = "0.1.0"\n',
+        "code/update.py": "before\n",
+        "cache.toml": "before\n",
+        "containers/Dockerfile": "before\n",
+        "README.md": "before\n",
+        ".github/workflows/build.yml": "before\n",
+    }
+    for path, text in files.items():
+        (clone / path).parent.mkdir(parents=True, exist_ok=True)
+        (clone / path).write_text(text)
+    _git(clone, "add", ".")
+    _git(clone, "commit", "--quiet", "-m", "base")
+    return clone
+
+
+def _merge_pull_request(clone: pathlib.Path, edits: dict[str, str]) -> None:
+    """Leave `clone` checked out at the merge of a pull request making `edits` into a moved-on base."""
+    _git(clone, "switch", "--quiet", "-c", "pull-request")
+    for path, text in edits.items():
+        (clone / path).parent.mkdir(parents=True, exist_ok=True)
+        (clone / path).write_text(text)
+    _git(clone, "add", ".")
+    _git(clone, "commit", "--quiet", "-m", "pull request")
+    _git(clone, "switch", "--quiet", "main")
+    (clone / "elsewhere.txt").write_text("the base moved on\n")
+    _git(clone, "add", ".")
+    _git(clone, "commit", "--quiet", "-m", "base moved on")
+    _git(clone, "merge", "--quiet", "--no-ff", "-m", "merge", "pull-request")
+
+
+_BUMPED = '[project]\nname = "example"\nversion = "0.1.1"\n'
+_SAME_VERSION_NEW_DEPENDENCY = '[project]\nname = "example"\nversion = "0.1.0"\ndependencies = ["numpy"]\n'
+
+
+@pytest.mark.ai_generated
+@pytest.mark.parametrize(
+    ("edits", "expect_exit"),
+    [
+        pytest.param({"code/update.py": "after\n"}, 1, id="code-without-a-bump"),
+        pytest.param({"code/update.py": "after\n", _VERSIONED_FILE: _BUMPED}, 0, id="code-with-a-bump"),
+        pytest.param({"cache.toml": "after\n"}, 1, id="configuration-without-a-bump"),
+        pytest.param({_VERSIONED_FILE: _SAME_VERSION_NEW_DEPENDENCY}, 1, id="environment-without-a-bump"),
+        pytest.param({"containers/Dockerfile": "after\n"}, 1, id="container-without-a-bump"),
+        pytest.param({_VERSIONED_FILE: _BUMPED}, 0, id="only-the-bump"),
+        pytest.param({"README.md": "after\n"}, 0, id="documentation-needs-no-bump"),
+        pytest.param({".github/workflows/build.yml": "after\n"}, 0, id="a-workflow-needs-no-bump"),
+    ],
+)
+def test_a_pull_request_must_bump_the_version_only_when_it_changes_what_the_cache_runs(
+    tmp_path: pathlib.Path, edits: dict[str, str], expect_exit: int
+) -> None:
+    """A change to what a cache runs under the version it already had cannot be told from no change."""
+    clone = _cache_with_a_base_commit(tmp_path)
+    _merge_pull_request(clone, edits)
+
+    completed = _run_version_check(clone, tmp_path)
+
+    assert completed.returncode == expect_exit, completed.stdout + completed.stderr
+    if expect_exit:
+        assert "::error" in completed.stdout
+        # The message names what changed, so the author sees why a bump was asked for.
+        assert any(path in completed.stdout.split("Changed:")[-1] for path in edits)
+
+
+@pytest.mark.ai_generated
+def test_the_version_check_passes_where_there_is_no_merge_to_compare() -> None:
+    """A checkout that is not a merge, as a push is, has no base, so the check has nothing to say."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as directory:
+        tmp_path = pathlib.Path(directory)
+        clone = _cache_with_a_base_commit(tmp_path)
+        (clone / "code/update.py").write_text("after\n")
+        _git(clone, "commit", "--quiet", "-am", "a change on its own")
+
+        completed = _run_version_check(clone, tmp_path)
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "not a merge checkout" in completed.stdout
+
+
+@pytest.mark.ai_generated
+def test_the_version_check_passes_where_the_base_has_no_version_yet(tmp_path: pathlib.Path) -> None:
+    """Adopting the file is what makes it checked, so a base without one has no version to bump from."""
+    clone = _cache_with_a_base_commit(tmp_path)
+    _git(clone, "rm", "--quiet", _VERSIONED_FILE)
+    _git(clone, "commit", "--quiet", "-m", "a base with no version file")
+    _merge_pull_request(clone, {"code/update.py": "after\n", _VERSIONED_FILE: _BUMPED})
+
+    completed = _run_version_check(clone, tmp_path)
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "no version to bump from" in completed.stdout
+
+
+@pytest.mark.ai_generated
+def test_the_version_check_runs_only_on_pull_requests_and_can_be_turned_off() -> None:
+    action = _image_action()
+    (step,) = [step for step in action["runs"]["steps"] if step.get("name") == _VERSION_CHECK_STEP_NAME]
+    steps = [step.get("name") for step in action["runs"]["steps"]]
+
+    assert "github.event_name == 'pull_request'" in step["if"]
+    assert "inputs.version-file != ''" in step["if"]
+    # Before anything is built, so a forgotten bump is reported without waiting for an image.
+    assert steps.index(_VERSION_CHECK_STEP_NAME) < steps.index("Build")

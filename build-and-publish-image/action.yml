@@ -36,6 +36,19 @@ inputs:
     description: "Comma-separated recipients of the failure notification (no spaces)."
     required: false
     default: cody.c.baker.phd@gmail.com
+  version-file:
+    description: >-
+      The TOML file whose `[project] version` names the state of the cache. A pull request that
+      changes any of `version-paths` must change this version too. Leave empty to skip the check.
+    required: false
+    default: envs/pyproject.toml
+  version-paths:
+    description: >-
+      Space-separated paths whose change calls for a version bump: the cache's code, its
+      configuration, its environment and its container. A change to anything else, such as the
+      workflows or the documentation, does not.
+    required: false
+    default: "code cache.toml envs/pyproject.toml containers"
 
 outputs:
   tags:
@@ -45,8 +58,58 @@ outputs:
 runs:
   using: composite
   steps:
+    # Two commits deep, so that on a pull request the merge commit being built still has both of its
+    # parents: the version check below compares the pull request against the base it merges into.
     - name: Checkout
       uses: actions/checkout@v7
+      with:
+        fetch-depth: 2
+
+    - name: Check the version was bumped
+      if: github.event_name == 'pull_request' && inputs.version-file != ''
+      shell: bash
+      # The version in `version-file` is the one place a cache's state is named, so a change to what
+      # the cache runs that keeps the version it had would be indistinguishable from no change. This
+      # fails the pull request instead, as `dandi-cache-utils` does for the library. A pull request
+      # that touches none of `version-paths` -- a workflow, the documentation -- needs no bump, and
+      # neither does one whose base has no version yet to bump from.
+      env:
+        VERSION_FILE: ${{ inputs.version-file }}
+        VERSION_PATHS: ${{ inputs.version-paths }}
+      run: |
+        # The checkout of a pull request is the merge of its head into its base. Its first parent is
+        # the base, so the pull request is exactly the difference between the two.
+        if ! git rev-parse --quiet --verify HEAD^2 > /dev/null; then
+          echo "This is not a merge checkout, so there is no base to compare the version against."
+          exit 0
+        fi
+
+        # shellcheck disable=SC2086 # The paths are a list, to be split.
+        CHANGED=$(git diff --name-only HEAD^1 HEAD -- ${VERSION_PATHS})
+        if [ -z "${CHANGED}" ]; then
+          echo "Nothing under ${VERSION_PATHS} changed, so the version does not need to."
+          exit 0
+        fi
+
+        read_version() {
+          python3 -c "import sys, tomllib; print(tomllib.load(open(sys.argv[1], 'rb'))['project']['version'])" "$1"
+        }
+        BASE_FILE=$(mktemp)
+        if ! git show "HEAD^1:${VERSION_FILE}" > "${BASE_FILE}" 2> /dev/null; then
+          echo "The base has no ${VERSION_FILE} yet, so there is no version to bump from."
+          exit 0
+        fi
+        BASE_VERSION=$(read_version "${BASE_FILE}")
+        VERSION=$(read_version "${VERSION_FILE}")
+        echo "Base version: ${BASE_VERSION}"
+        echo "This version: ${VERSION}"
+        if [ "${VERSION}" = "${BASE_VERSION}" ]; then
+          echo "::error file=${VERSION_FILE}::The version is still ${BASE_VERSION}, but this pull request changes what the cache runs. Bump the version in ${VERSION_FILE}."
+          echo "Changed:"
+          echo "${CHANGED}" | sed 's/^/  /'
+          exit 1
+        fi
+        echo "Version bumped from ${BASE_VERSION} to ${VERSION} ✓"
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v4
