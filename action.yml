@@ -118,10 +118,17 @@ runs:
       shell: bash
       # `|| true` on the update: third-party apt repositories preinstalled on the runner (Chrome's,
       # for one) intermittently fail to refresh, and that has nothing to do with the package we
-      # need. The install itself is not tolerated, so a genuinely missing package still fails here.
+      # need. When the install itself fails, the runner could not reach Ubuntu's mirrors, as on
+      # 2026-11-11 when it could not resolve them for hours and every cache failed here. git-annex
+      # publishes a standalone build to PyPI, which `uv` reaches without them.
       run: |
         sudo apt-get update || true
-        sudo apt-get install -y git-annex
+        if sudo apt-get install -y git-annex; then
+          exit 0
+        fi
+        echo "::warning::apt could not install git-annex, so it is installed from PyPI instead."
+        uv tool install git-annex
+        uv tool dir --bin >> "$GITHUB_PATH"
 
     - name: Log in to GitHub Container Registry
       if: ${{ steps.gate.outputs.should-run == 'true' }}
