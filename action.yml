@@ -41,7 +41,8 @@ inputs:
   chain:
     description: >-
       Queue the next run as soon as this one finishes when an update ends with backlog left: its
-      batch was full and it recorded something new. "false" leaves the next run to the schedule.
+      batch was full or cut short by a time or memory limit, and it recorded something new. "false"
+      leaves the next run to the schedule.
     required: false
     default: "true"
   mail-username:
@@ -208,10 +209,12 @@ runs:
         commit-message: Publish ${{ github.event.repository.name }}
 
     # GitHub's scheduler delays and drops scheduled runs under load, so a cache with a backlog can
-    # sit idle for hours between runs whatever its cron says. An update that ends with backlog left
-    # therefore queues the next one itself: its batch was full, and it recorded something new, which
-    # is what keeps a run that only re-fails the same items from chaining forever. It reads the
-    # run's own log, whose two lines below are the library's report of the batch.
+    # sit idle for hours between runs whatever its cron says. An update that ends with work it could
+    # have kept doing therefore queues the next one itself. That is a batch that was full, or one a
+    # time or memory limit cut short, and in either case only if it recorded something new. Without
+    # that, a cache whose stuck items time out every run, as valid-nwb-file-to-array-sizes' do,
+    # would chain the same failures forever. It reads the run's own log, from the last batch on:
+    # the library's `Batch summary:` line where the image has it, and its older prose where not.
     #
     # Only `update` chains. A refresh re-assesses what is already recorded, so its batch is always
     # full and it would never stop. Nothing is queued if another run of this repository is already
@@ -232,24 +235,46 @@ runs:
           echo "No ${OPERATION} log to read; leaving the next run to the schedule."
           exit 0
         fi
-        BATCH=$(grep -oE 'Processing [0-9]+ items' "${LOG}" | tail -n 1 | grep -oE '[0-9]+' || true)
-        NEW=$(grep -oE '\([0-9]+ new, ' "${LOG}" | tail -n 1 | grep -oE '[0-9]+' || true)
+        BATCH_LOG=$(awk '/Processing [0-9]+ items/ { section = "" } { section = section $0 "\n" } END { printf "%s", section }' "${LOG}")
+        SUMMARY=$(grep -oE 'Batch summary: .*' <<< "${BATCH_LOG}" | tail -n 1 || true)
+        summary_field() { grep -oE "(^| )$1=[0-9]+" <<< "${SUMMARY}" | grep -oE '[0-9]+' || true; }
+        if [ -n "${SUMMARY}" ]; then
+          BATCH=$(summary_field considered)
+          NEW=$(summary_field new)
+          LEFT=$(summary_field left)
+        else
+          BATCH=$(grep -oE 'Processing [0-9]+ items' <<< "${BATCH_LOG}" | tail -n 1 | grep -oE '[0-9]+' || true)
+          NEW=$(grep -oE '\([0-9]+ new, ' <<< "${BATCH_LOG}" | tail -n 1 | grep -oE '[0-9]+' || true)
+          STOPPED_AFTER=$(grep -oE 'stops after [0-9]+ of [0-9]+ items' <<< "${BATCH_LOG}" | tail -n 1 | grep -oE '[0-9]+' | tr '\n' ' ' || true)
+          if [ -n "${STOPPED_AFTER}" ]; then
+            read -r REACHED CONSIDERED <<< "${STOPPED_AFTER}"
+            LEFT=$((CONSIDERED - REACHED))
+          elif grep -qE 'minute limit while .* still running' <<< "${BATCH_LOG}"; then
+            LEFT=1
+          else
+            LEFT=0
+          fi
+        fi
         if [ -z "${LIMIT}" ]; then
           LIMIT=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb")).get("operations", {}).get(sys.argv[2], {}).get("limit", ""))' \
             "${GITHUB_WORKSPACE}/cache.toml" "${OPERATION}")
         fi
-        echo "Batch ${BATCH:-unknown} of limit ${LIMIT:-none}; ${NEW:-unknown} new."
+        echo "Batch ${BATCH:-unknown} of limit ${LIMIT:-none}; ${NEW:-unknown} new; ${LEFT:-unknown} left unreached."
 
-        if [ -z "${BATCH}" ] || [ -z "${LIMIT}" ] || [ -z "${NEW}" ]; then
-          echo "Not an incremental batch with a limit; leaving the next run to the schedule."
-          exit 0
-        fi
-        if [ "${BATCH}" -lt "${LIMIT}" ]; then
-          echo "The batch was not full, so the backlog is cleared."
+        if [ -z "${BATCH}" ] || [ -z "${NEW}" ]; then
+          echo "Not an incremental batch; leaving the next run to the schedule."
           exit 0
         fi
         if [ "${NEW}" -eq 0 ]; then
-          echo "A full batch recorded nothing new; not chaining a run that would repeat it."
+          echo "The batch recorded nothing new; not chaining a run that would repeat it."
+          exit 0
+        fi
+        if [ "${LEFT:-0}" -gt 0 ]; then
+          echo "A limit stopped the batch before it reached every item."
+        elif [ -n "${LIMIT}" ] && [ "${BATCH}" -ge "${LIMIT}" ]; then
+          echo "The batch was full."
+        else
+          echo "The batch finished and was not full, so the backlog is cleared."
           exit 0
         fi
 

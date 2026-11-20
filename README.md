@@ -39,7 +39,7 @@ jobs:
     # So a hung network read cannot burn a full six hours.
     timeout-minutes: 330
     steps:
-      - uses: dandi-cache/dandi-cache-action@v7
+      - uses: dandi-cache/dandi-cache-action@v8
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           testing: ${{ inputs.testing || false }}
@@ -55,7 +55,7 @@ jobs:
 | `testing` | `false` | Process a handful of items into `testing_`-prefixed files, leaving the cache untouched. |
 | `limit` | *the cache's* | Cap on new items processed this run. |
 | `image` | *the cache's* | Runtime image; empty uses the one `cache.toml` declares. |
-| `chain` | `true` | Queue the next run when an update ends with backlog left. `false` leaves it to the schedule. |
+| `chain` | `true` | Queue the next run when an update ends with backlog left and made progress. `false` leaves it to the schedule. |
 | `mail-username` / `mail-password` | empty | SMTP credentials for the notifications: a failed run, and a file past 80% of GitHub's 100 MiB limit on `derivatives` or `dist` (sent even when the run succeeds). Empty sends no mail. |
 | `notify-to` | `cody.c.baker.phd@gmail.com` | Who to notify. |
 
@@ -67,8 +67,14 @@ A cache with a second entry point adds a second job passing `operation:`.
 
 GitHub delays and drops scheduled runs under load, so a cache with a backlog used to sit idle for hours between runs whatever its cron asked for.
 An update that ends with backlog left now queues the next run itself, as soon as it finishes.
-Backlog is left when its batch was full and it recorded something new; the second condition keeps a run that only re-fails the same items from chaining forever.
-Both are read from the run's own log, the library's `Processing N items` and `(K new, …)` lines.
+Backlog is left when its batch was full, or a time or memory limit stopped it before it reached every item.
+Either way it chains only if the run recorded something new.
+That keeps a run that only re-fails the same items from chaining forever, as `valid-nwb-file-to-array-sizes` would, since its stuck files time out on every run.
+A cache that declares no `limit` chains only when a limit stopped its batch, since otherwise it reached everything.
+All of this is read from the run's own log.
+The library's `Batch summary:` line gives it directly.
+An image whose library predates that line is read from its `Processing N items`, `(K new, …)` and time or memory limit lines instead.
+Until `@v8` only a full batch chained, so a run stopped by its time limit waited for the schedule.
 
 Only `update` chains, since a refresh re-assesses what is already recorded and its batch is always full.
 Nothing is queued while another run of the repository is waiting, which matters where workflows share a concurrency group: a new pending run would cancel the waiting one.
@@ -94,7 +100,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: dandi-cache/dandi-cache-action/build-and-publish-image@v7
+      - uses: dandi-cache/dandi-cache-action/build-and-publish-image@v8
         with:
           token: ${{ secrets._GITHUB_API_KEY }}
           mail-username: ${{ secrets.MAIL_USERNAME }}
@@ -127,6 +133,6 @@ Now a tag on ghcr only ever names an image that passed, and a failed build leave
 
 These are *referenced*, not copied: a cache says `uses:` and gets exactly the tree the tag it pins was frozen at, so what a cache runs is decided by one line in its own workflow rather than by whatever landed here since.
 A release freezes its tag, so adopting a newer one is a deliberate edit in the cache; the trade is that nothing here can change under a cache that has not asked for it.
-Keeping them apart from the library means they are versioned by their own interface — the inputs above — rather than by the library's release cadence, and a cache can pin `@v7` while tracking the image separately.
+Keeping them apart from the library means they are versioned by their own interface — the inputs above — rather than by the library's release cadence, and a cache can pin `@v8` while tracking the image separately.
 
 The [cache template](https://github.com/dandi-cache/cache-template) is the other side of that line: what it holds is copied once when a cache is generated, and owned by the cache from then on.
