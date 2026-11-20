@@ -156,36 +156,136 @@ def _run_step(step_name: str, tmp_path: pathlib.Path, environment: dict) -> tupl
     return calls.read_text(), output.read_text() if output.exists() else ""
 
 
+_RUNNING = '[{"status": "in_progress"}]'
+
+
+def _batch_log(batch: int, new: int, *, stop: str = "", summary: str = "") -> str:
+    """A log the way the library writes it: the batch, then any limit that stopped it, then the write."""
+    lines = [f"INFO Processing {batch} items (100 already recorded)."]
+    if stop:
+        lines.append(f"WARNING {stop}")
+    lines.append(f"INFO Wrote 600 records to /tmp/derivatives/x.jsonl ({new} new, 3 failed) in 1.0 min")
+    if summary:
+        lines.append(f"INFO Batch summary: {summary}")
+    return "\n".join(lines) + "\n"
+
+
+_STOPPED_FOR_TIME = (
+    "[120/500] sub-01.nwb: the batch has run for its 240-minute limit, so it stops after 120 of 500 items and "
+    "writes what it has, rather than being killed with the job and losing it."
+)
+_ABANDONED_AT_TIME = (
+    "The batch has run for its 240-minute limit while 4 items were still running, so it abandons them and "
+    "writes what it has, rather than being killed with the job and losing it: a, b, c, d."
+)
+
+
 @pytest.mark.ai_generated
 @pytest.mark.parametrize(
-    ("batch", "new", "runs", "dispatch_exit", "expect_dispatch"),
+    ("log", "limit", "runs", "dispatch_exit", "expect_dispatch"),
     [
-        pytest.param(500, 120, '[{"status": "in_progress"}]', 0, True, id="backlog-left"),
-        pytest.param(380, 380, '[{"status": "in_progress"}]', 0, False, id="batch-not-full"),
-        pytest.param(500, 0, '[{"status": "in_progress"}]', 0, False, id="nothing-new"),
-        pytest.param(500, 120, '[{"status": "in_progress"}, {"status": "pending"}]', 0, False, id="another-waiting"),
-        pytest.param(None, None, "[]", 0, False, id="no-batch-log"),
-        pytest.param(500, 120, '[{"status": "in_progress"}]', 1, True, id="dispatch-refused-is-not-a-failure"),
+        pytest.param(_batch_log(500, 120), 500, _RUNNING, 0, True, id="backlog-left"),
+        pytest.param(_batch_log(380, 380), 500, _RUNNING, 0, False, id="batch-not-full"),
+        pytest.param(_batch_log(500, 0), 500, _RUNNING, 0, False, id="nothing-new"),
+        pytest.param(
+            _batch_log(500, 120), 500, '[{"status": "in_progress"}, {"status": "pending"}]', 0, False, id="another-waiting"
+        ),
+        pytest.param(None, 500, "[]", 0, False, id="no-batch-log"),
+        pytest.param(_batch_log(500, 120), 500, _RUNNING, 1, True, id="dispatch-refused-is-not-a-failure"),
+        pytest.param(
+            _batch_log(380, 100, stop=_STOPPED_FOR_TIME.replace("of 500", "of 380")),
+            500,
+            _RUNNING,
+            0,
+            True,
+            id="stopped-for-time-under-the-limit",
+        ),
+        pytest.param(
+            _batch_log(380, 100, stop=_ABANDONED_AT_TIME), 500, _RUNNING, 0, True, id="abandoned-at-time-under-the-limit"
+        ),
+        pytest.param(
+            _batch_log(380, 0, stop=_ABANDONED_AT_TIME),
+            None,
+            _RUNNING,
+            0,
+            False,
+            id="array-sizes-stopped-for-time-with-nothing-new",
+        ),
+        pytest.param(
+            _batch_log(380, 0, summary="considered=380 new=0 failed=370 left=4 stopped=time"),
+            None,
+            _RUNNING,
+            0,
+            False,
+            id="array-sizes-summary-with-nothing-new",
+        ),
+        pytest.param(
+            _batch_log(380, 380, stop=_STOPPED_FOR_TIME.replace("120 of 500", "380 of 380")),
+            500,
+            _RUNNING,
+            0,
+            False,
+            id="stopped-for-time-on-the-last-item",
+        ),
+        pytest.param(
+            _batch_log(2000, 120, stop=_STOPPED_FOR_TIME.replace("of 500", "of 2000")),
+            None,
+            _RUNNING,
+            0,
+            True,
+            id="no-limit-stopped-for-time",
+        ),
+        pytest.param(_batch_log(2000, 120), None, _RUNNING, 0, False, id="no-limit-finished"),
+        pytest.param(
+            _batch_log(2000, 120, summary="considered=2000 new=120 failed=0 left=1880 stopped=time"),
+            None,
+            _RUNNING,
+            0,
+            True,
+            id="summary-stopped-for-time",
+        ),
+        pytest.param(
+            _batch_log(2000, 120, summary="considered=2000 new=120 failed=0 left=1880 stopped=memory"),
+            None,
+            _RUNNING,
+            0,
+            True,
+            id="summary-stopped-for-memory",
+        ),
+        pytest.param(
+            _batch_log(380, 120, summary="considered=380 new=120 failed=0 left=0 stopped=none"),
+            500,
+            _RUNNING,
+            0,
+            False,
+            id="summary-finished-under-the-limit",
+        ),
+        pytest.param(
+            _batch_log(380, 120, stop=_STOPPED_FOR_TIME.replace("of 500", "of 380")) + _batch_log(10, 10),
+            500,
+            _RUNNING,
+            0,
+            False,
+            id="only-the-last-batch-counts",
+        ),
     ],
 )
 def test_an_update_queues_the_next_run_only_while_a_backlog_remains(
-    tmp_path: pathlib.Path, batch, new, runs, dispatch_exit, expect_dispatch
+    tmp_path: pathlib.Path, log, limit, runs, dispatch_exit, expect_dispatch
 ) -> None:
-    """Chain on a full batch that made progress, and on nothing else.
+    """Chain on a batch that was full or cut short by a limit and made progress, and on nothing else.
 
-    A full batch that recorded nothing would chain the same failures forever, and a run queued
-    while another waits would cancel it where workflows share a concurrency group.
+    A batch that recorded nothing would chain the same failures forever, which is what a time-limited
+    run of valid-nwb-file-to-array-sizes does on most runs. A run queued while another waits would
+    cancel it where workflows share a concurrency group.
     """
     logs = tmp_path / "derivatives-dataset" / "logs"
     logs.mkdir(parents=True)
-    if batch is not None:
-        (logs / "update_2026-10-04T10-00-00Z.log").write_text(
-            f"INFO Processing {batch} items (100 already recorded).\n"
-            f"INFO Wrote 600 records to /tmp/derivatives/x.jsonl ({new} new, 3 failed) in 1.0 min\n"
-        )
+    if log is not None:
+        (logs / "update_2026-10-04T10-00-00Z.log").write_text(log)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "cache.toml").write_text("[operations.update]\nlimit = 500\n")
+    (workspace / "cache.toml").write_text("[operations.update]\n" + (f"limit = {limit}\n" if limit else ""))
 
     calls, _ = _run_step(
         _CHAIN_STEP_NAME,
